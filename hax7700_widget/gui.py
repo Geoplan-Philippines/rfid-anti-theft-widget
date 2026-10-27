@@ -3,20 +3,34 @@
 from __future__ import annotations
 
 import ctypes
+import math
+import os
 from pathlib import Path
 import platform
+import time
 
-from .core import ScanSession, TcpDeactivatorListener, local_ipv4_addresses
+from .core import ScanSession, TcpDeactivatorListener
 
 
 def _auto_start_listener(listener: TcpDeactivatorListener, sdk_dir: Path, port: int = 9090) -> None:
     if platform.system() == "Windows" and ctypes.sizeof(ctypes.c_void_p) == 4 and (sdk_dir / "card_7k.dll").is_file():
         try:
-            listener.start_windows_sdk(sdk_dir=sdk_dir, host="0.0.0.0", port=port, poll_ms=200)
+            listener.start_windows_sdk(sdk_dir=sdk_dir, host="0.0.0.0", port=port, poll_ms=50)
             return
         except Exception:
             pass
     listener.start_tcp(mode="listen", host="0.0.0.0", port=port, peer_filter="169.254.68.93")
+
+
+def _lerp_hex(c1: str, c2: str, t: float) -> str:
+    """Linearly interpolate between two #RRGGBB hex colors (t in 0.0..1.0)."""
+    t = max(0.0, min(1.0, t))
+    r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
+    r2, g2, b2 = int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16)
+    r = int(r1 + (r2 - r1) * t)
+    g = int(g1 + (g2 - g1) * t)
+    b = int(b1 + (b2 - b1) * t)
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 
 def run_gtk_widget(
@@ -28,7 +42,7 @@ def run_gtk_widget(
     import gi
 
     gi.require_version("Gtk", "3.0")
-    from gi.repository import GLib, Gtk, Pango
+    from gi.repository import GLib, Gtk
 
     css = b"""
     window {
@@ -36,70 +50,44 @@ def run_gtk_widget(
       color: #18181b;
     }
     .header-box {
-      border-bottom: 2px solid #18181b;
-      padding-bottom: 8px;
-    }
-    .eyebrow {
-      color: #3f3f46;
-      font-size: 11px;
-      font-weight: 600;
+      border-bottom: 1px solid #e4e4e7;
+      padding-bottom: 10px;
     }
     .title {
       color: #18181b;
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 800;
     }
-    .badge {
-      background-color: #f4f4f5;
-      color: #18181b;
-      padding: 3px 8px;
-      border-radius: 3px;
-      font-family: monospace;
-      font-size: 11px;
-      font-weight: 700;
-    }
-    .badge-online {
-      background-color: #18181b;
-      color: #fafafa;
+    .status-text {
+      color: #52525b;
+      font-size: 12px;
+      font-weight: 600;
     }
     .count-label {
       color: #18181b;
-      font-size: 52px;
+      font-size: 56px;
       font-weight: 800;
     }
     .unit-label {
-      color: #18181b;
-      font-size: 13px;
-      font-weight: 700;
-    }
-    .sub-label {
-      color: #3f3f46;
+      color: #71717a;
       font-size: 12px;
-    }
-    .mono-label {
-      color: #3f3f46;
-      font-family: monospace;
-      font-size: 11px;
+      font-weight: 600;
     }
     .primary-btn {
       background-image: none;
       background-color: #18181b;
       color: #fafafa;
       font-weight: 700;
-      border-radius: 3px;
-      padding: 6px 10px;
+      border-radius: 6px;
+      padding: 10px 14px;
     }
-    .secondary-btn {
+    .danger-btn {
       background-image: none;
-      background-color: #f4f4f5;
-      color: #18181b;
-      font-weight: 600;
-      border-radius: 3px;
-      padding: 6px 10px;
-    }
-    .footer-box {
-      border-top: 1px solid #d4d4d8;
-      padding-top: 8px;
+      background-color: #dc2626;
+      color: #ffffff;
+      font-weight: 700;
+      border-radius: 6px;
+      padding: 10px 14px;
     }
     """
     provider = Gtk.CssProvider()
@@ -107,150 +95,104 @@ def run_gtk_widget(
     screen = Gtk.Window().get_screen()
     Gtk.StyleContext.add_provider_for_screen(screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-    win = Gtk.Window(title="HAX7700 Tag Counter")
-    win.set_default_size(340, 320)
+    listener.set_scanning(False)
+
+    win = Gtk.Window(title="HAX7700")
+    win.set_default_size(290, 230)
     win.set_resizable(False)
     win.set_keep_above(True)
-    win.set_border_width(14)
+    win.set_border_width(16)
 
-    root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
     win.add(root)
 
-    # Header
     header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
     header.get_style_context().add_class("header-box")
-    title_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
-    eyebrow = Gtk.Label(label="HAX7700 / RFID7700", xalign=0)
-    eyebrow.get_style_context().add_class("eyebrow")
-    title = Gtk.Label(label="Deactivator Counter", xalign=0)
+    title = Gtk.Label(label="Tag Counter", xalign=0)
     title.get_style_context().add_class("title")
-    title_col.pack_start(eyebrow, False, False, 0)
-    title_col.pack_start(title, False, False, 0)
 
-    badge = Gtk.Label(label="STARTING", xalign=1)
-    badge.get_style_context().add_class("badge")
-    header.pack_start(title_col, True, True, 0)
-    header.pack_end(badge, False, False, 0)
+    status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    dot_area = Gtk.DrawingArea()
+    dot_area.set_size_request(18, 18)
+    status_lbl = Gtk.Label(label="Connecting...", xalign=1)
+    status_lbl.get_style_context().add_class("status-text")
+    status_box.pack_start(dot_area, False, False, 0)
+    status_box.pack_start(status_lbl, False, False, 0)
+
+    header.pack_start(title, True, True, 0)
+    header.pack_end(status_box, False, False, 0)
     root.pack_start(header, False, False, 0)
 
-    # Big Counter
-    counter_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-    count_lbl = Gtk.Label(label="0", xalign=0)
+    counter_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+    count_lbl = Gtk.Label(label="0", xalign=0.5)
     count_lbl.get_style_context().add_class("count-label")
-    unit_lbl = Gtk.Label(label="Unique tags scanned in session", xalign=0)
+    unit_lbl = Gtk.Label(label="Tags scanned", xalign=0.5)
     unit_lbl.get_style_context().add_class("unit-label")
-    repeats_lbl = Gtk.Label(label="0 repeat reads ignored · 0 total reads", xalign=0)
-    repeats_lbl.get_style_context().add_class("sub-label")
-    last_epc_lbl = Gtk.Label(label="Last EPC: none", xalign=0)
-    last_epc_lbl.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-    last_epc_lbl.get_style_context().add_class("mono-label")
-    counter_box.pack_start(count_lbl, False, False, 0)
+    counter_box.pack_start(count_lbl, True, True, 2)
     counter_box.pack_start(unit_lbl, False, False, 0)
-    counter_box.pack_start(repeats_lbl, False, False, 0)
-    counter_box.pack_start(last_epc_lbl, False, False, 0)
-    root.pack_start(counter_box, False, False, 0)
+    root.pack_start(counter_box, True, True, 0)
 
-    # Buttons
-    btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, homogeneous=True)
-    demo_btn = Gtk.Button(label="+ Demo tag")
-    demo_btn.get_style_context().add_class("primary-btn")
-    reset_btn = Gtk.Button(label="New session")
-    reset_btn.get_style_context().add_class("secondary-btn")
-    btn_row.pack_start(demo_btn, True, True, 0)
-    btn_row.pack_start(reset_btn, True, True, 0)
-    root.pack_start(btn_row, False, False, 0)
+    scan_btn = Gtk.Button(label="Start Scanning")
+    scan_btn.get_style_context().add_class("primary-btn")
+    root.pack_end(scan_btn, False, False, 0)
 
-    # EPC Entry (for built-in keyboard wedge or manual tag scan)
-    entry_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-    epc_entry = Gtk.Entry()
-    epc_entry.set_placeholder_text("Scan or enter EPC hex…")
-    count_btn = Gtk.Button(label="Count")
-    count_btn.get_style_context().add_class("secondary-btn")
-    entry_row.pack_start(epc_entry, True, True, 0)
-    entry_row.pack_end(count_btn, False, False, 0)
-    root.pack_start(entry_row, False, False, 0)
+    def on_draw_dot(_area, cr) -> bool:
+        st = listener.state()
+        pulse = 0.5 + 0.5 * math.sin(time.monotonic() * 4.0)
+        cx, cy = 9.0, 9.0
+        halo_r = 5.0 + 3.5 * pulse
+        if st.peer:
+            cr.set_source_rgba(0.13, 0.77, 0.37, 0.18 + 0.20 * pulse)
+            cr.arc(cx, cy, halo_r, 0, 2 * math.pi)
+            cr.fill()
+            cr.set_source_rgba(0.09, 0.64, 0.29, 0.75 + 0.25 * pulse)
+        else:
+            cr.set_source_rgba(0.96, 0.62, 0.04, 0.18 + 0.22 * pulse)
+            cr.arc(cx, cy, halo_r, 0, 2 * math.pi)
+            cr.fill()
+            cr.set_source_rgba(0.96, 0.62, 0.04, 0.55 + 0.45 * pulse)
+        cr.arc(cx, cy, 4.5, 0, 2 * math.pi)
+        cr.fill()
+        return False
 
-    # Footer (Hardware connection status + mode switch)
-    footer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-    footer_box.get_style_context().add_class("footer-box")
-    status_lbl = Gtk.Label(label="Listening on :9090…", xalign=0)
-    status_lbl.set_ellipsize(Pango.EllipsizeMode.END)
-    status_lbl.get_style_context().add_class("sub-label")
-    mode_btn = Gtk.Button(label="Port 26")
-    mode_btn.get_style_context().add_class("secondary-btn")
-    footer_box.pack_start(status_lbl, True, True, 0)
-    footer_box.pack_end(mode_btn, False, False, 0)
-    root.pack_end(footer_box, False, False, 0)
+    dot_area.connect("draw", on_draw_dot)
 
     def refresh_ui() -> bool:
         snap = session.snapshot()
         st = listener.state()
         count_lbl.set_text(str(snap["unique_count"]))
-        repeats_lbl.set_text(
-            f"{snap['repeat_reads']} repeat reads ignored · {snap['total_reads']} total reads"
-        )
-        last_epc_lbl.set_text(
-            f"Last EPC: {snap['last_epc']}" if snap["last_epc"] else "Last EPC: none"
-        )
-        ctx = badge.get_style_context()
-        if st.peer:
-            badge.set_text("ONLINE")
-            ctx.add_class("badge-online")
-            status_lbl.set_text(f"{st.peer} · RX {st.bytes_received} B")
-        elif st.running:
-            badge.set_text("SDK :9090" if st.sdk_active else f"LISTEN :{port}" if st.mode == "listen" else "PORT 26")
-            ctx.remove_class("badge-online")
-            status_lbl.set_text(st.status_text)
+        status_lbl.set_text("Connected" if st.peer else "Connecting...")
+        btn_ctx = scan_btn.get_style_context()
+        if st.scanning:
+            scan_btn.set_label("Stop")
+            btn_ctx.remove_class("primary-btn")
+            btn_ctx.add_class("danger-btn")
         else:
-            badge.set_text("OFFLINE")
-            ctx.remove_class("badge-online")
-            status_lbl.set_text(st.last_error or st.status_text)
+            scan_btn.set_label("Start Scanning")
+            btn_ctx.remove_class("danger-btn")
+            btn_ctx.add_class("primary-btn")
+        dot_area.queue_draw()
         return True
 
-    def on_demo(_btn: Gtk.Button) -> None:
-        session.observe(None, source="demo")
-        refresh_ui()
-
-    def on_reset(_btn: Gtk.Button) -> None:
-        session.reset()
-        refresh_ui()
-
-    def on_submit_epc(_widget) -> None:
-        raw = epc_entry.get_text().strip()
-        if not raw:
-            return
-        try:
-            session.observe(raw, source="scanner")
-            epc_entry.set_text("")
-        except ValueError as err:
-            status_lbl.set_text(str(err))
-        refresh_ui()
-
-    def on_toggle_mode(_btn: Gtk.Button) -> None:
-        st = listener.state()
-        if st.mode == "listen":
-            listener.start_tcp(mode="client", host="169.254.68.93", port=26)
-            mode_btn.set_label("Listen :9090")
+    def on_toggle_scan(_btn: Gtk.Button) -> None:
+        if listener.is_scanning():
+            listener.set_scanning(False)
         else:
-            _auto_start_listener(listener, sdk_dir, port=port)
-            mode_btn.set_label("Port 26")
+            session.reset()
+            listener.set_scanning(True)
         refresh_ui()
 
     def on_destroy(_win: Gtk.Window) -> None:
         listener.stop()
         Gtk.main_quit()
 
-    demo_btn.connect("clicked", on_demo)
-    reset_btn.connect("clicked", on_reset)
-    count_btn.connect("clicked", on_submit_epc)
-    epc_entry.connect("activate", on_submit_epc)
-    mode_btn.connect("clicked", on_toggle_mode)
+    scan_btn.connect("clicked", on_toggle_scan)
     win.connect("destroy", on_destroy)
 
     _auto_start_listener(listener, sdk_dir, port=port)
     win.show_all()
     refresh_ui()
-    GLib.timeout_add(300, refresh_ui)
+    GLib.timeout_add(30, refresh_ui)
     Gtk.main()
     return 0
 
@@ -261,75 +203,153 @@ def run_tk_widget(
     sdk_dir: Path,
     port: int = 9090,
 ) -> int:
+    # Start in idle state so tags are only counted after clicking "Start Scanning"
+    listener.set_scanning(False)
+    # Start native Windows SDK (card_7k.dll / mfc140.dll) before initializing Tcl/Tk
+    _auto_start_listener(listener, sdk_dir, port=port)
+
     import tkinter as tk
 
     root = tk.Tk()
-    root.title("HAX7700 Tag Counter")
-    root.geometry("340x320")
+    root.title("HAX7700")
+    root.geometry("290x230")
     root.resizable(False, False)
     root.attributes("-topmost", True)
-    root.configure(bg="#ffffff", padx=14, pady=12)
+    root.configure(bg="#ffffff", padx=18, pady=14)
 
+    # Header: Title on left, breathing circle + status on right
     header = tk.Frame(root, bg="#ffffff")
     header.pack(fill="x", pady=(0, 8))
-    tk.Label(header, text="HAX7700 / RFID7700", font=("Arial", 9, "bold"), fg="#3f3f46", bg="#ffffff").pack(anchor="w")
-    title_row = tk.Frame(header, bg="#ffffff")
-    title_row.pack(fill="x")
-    tk.Label(title_row, text="Deactivator Counter", font=("Arial", 13, "bold"), fg="#18181b", bg="#ffffff").pack(side="left")
-    badge_var = tk.StringVar(value="STARTING")
-    tk.Label(title_row, textvariable=badge_var, font=("Courier", 9, "bold"), fg="#18181b", bg="#f4f4f5", padx=6, pady=2).pack(side="right")
+    tk.Label(
+        header,
+        text="Tag Counter",
+        font=("Segoe UI", 12, "bold"),
+        fg="#18181b",
+        bg="#ffffff",
+    ).pack(side="left")
 
-    tk.Frame(root, bg="#18181b", height=2).pack(fill="x", pady=(0, 8))
+    status_frame = tk.Frame(header, bg="#ffffff")
+    status_frame.pack(side="right")
 
+    dot_canvas = tk.Canvas(
+        status_frame,
+        width=18,
+        height=18,
+        bg="#ffffff",
+        highlightthickness=0,
+        bd=0,
+    )
+    dot_canvas.pack(side="left", padx=(0, 5))
+    halo_id = dot_canvas.create_oval(1, 1, 17, 17, fill="#fef3c7", outline="")
+    core_id = dot_canvas.create_oval(5, 5, 13, 13, fill="#f59e0b", outline="")
+
+    status_var = tk.StringVar(value="Connecting...")
+    status_lbl = tk.Label(
+        status_frame,
+        textvariable=status_var,
+        font=("Segoe UI", 9, "bold"),
+        fg="#71717a",
+        bg="#ffffff",
+    )
+    status_lbl.pack(side="left")
+
+    tk.Frame(root, bg="#f4f4f5", height=1).pack(fill="x", pady=(0, 8))
+
+    # Center Big Counter
+    center = tk.Frame(root, bg="#ffffff")
+    center.pack(expand=True, fill="both")
     count_var = tk.StringVar(value="0")
-    tk.Label(root, textvariable=count_var, font=("Arial", 42, "bold"), fg="#18181b", bg="#ffffff", anchor="w").pack(fill="x")
-    tk.Label(root, text="Unique tags scanned in session", font=("Arial", 10, "bold"), fg="#18181b", bg="#ffffff", anchor="w").pack(fill="x")
+    tk.Label(
+        center,
+        textvariable=count_var,
+        font=("Segoe UI", 46, "bold"),
+        fg="#18181b",
+        bg="#ffffff",
+    ).pack(expand=True)
 
-    repeats_var = tk.StringVar(value="0 repeat reads ignored · 0 total reads")
-    tk.Label(root, textvariable=repeats_var, font=("Arial", 9), fg="#3f3f46", bg="#ffffff", anchor="w").pack(fill="x")
+    # Start Scanning / Stop Button
+    def on_toggle_scan() -> None:
+        if listener.is_scanning():
+            listener.set_scanning(False)
+        else:
+            session.reset()
+            listener.set_scanning(True)
+        update_ui()
 
-    last_epc_var = tk.StringVar(value="Last EPC: none")
-    tk.Label(root, textvariable=last_epc_var, font=("Courier", 9), fg="#3f3f46", bg="#ffffff", anchor="w").pack(fill="x", pady=(0, 8))
-
-    btn_row = tk.Frame(root, bg="#ffffff")
-    btn_row.pack(fill="x", pady=(0, 8))
-    tk.Button(
-        btn_row,
-        text="+ Demo tag",
-        font=("Arial", 10, "bold"),
+    scan_btn = tk.Button(
+        root,
+        text="Start Scanning",
+        font=("Segoe UI", 11, "bold"),
         bg="#18181b",
         fg="#fafafa",
+        activebackground="#27272a",
+        activeforeground="#fafafa",
         relief="flat",
-        command=lambda: session.observe(None, source="demo"),
-    ).pack(side="left", expand=True, fill="x", padx=(0, 4))
-    tk.Button(
-        btn_row,
-        text="New session",
-        font=("Arial", 10, "bold"),
-        bg="#f4f4f5",
-        fg="#18181b",
-        relief="flat",
-        command=session.reset,
-    ).pack(side="right", expand=True, fill="x", padx=(4, 0))
+        bd=0,
+        pady=8,
+        cursor="hand2",
+        command=on_toggle_scan,
+    )
+    scan_btn.pack(side="bottom", fill="x", pady=(8, 0))
 
-    status_var = tk.StringVar(value=f"PC IPv4: {', '.join(local_ipv4_addresses()) or '127.0.0.1'}")
-    tk.Label(root, textvariable=status_var, font=("Arial", 9), fg="#3f3f46", bg="#ffffff", anchor="w").pack(side="bottom", fill="x")
-
-    _auto_start_listener(listener, sdk_dir, port=port)
-
-    def tick() -> None:
+    def update_ui() -> None:
         snap = session.snapshot()
         st = listener.state()
         count_var.set(str(snap["unique_count"]))
-        repeats_var.set(f"{snap['repeat_reads']} repeat reads ignored · {snap['total_reads']} total reads")
-        last_epc_var.set(f"Last EPC: {snap['last_epc']}" if snap["last_epc"] else "Last EPC: none")
-        badge_var.set("ONLINE" if st.peer else ("SDK" if st.sdk_active else "LISTENING"))
-        status_var.set(f"{st.peer} · RX {st.bytes_received} B" if st.peer else st.status_text)
-        root.after(300, tick)
+
+        # Smooth breathing animation (sine wave 0.0 .. 1.0)
+        pulse = 0.5 + 0.5 * math.sin(time.monotonic() * 4.2)
+        halo_r = 4.5 + 3.5 * pulse
+        dot_canvas.coords(halo_id, 9.0 - halo_r, 9.0 - halo_r, 9.0 + halo_r, 9.0 + halo_r)
+
+        if st.peer:
+            status_var.set("Connected")
+            status_lbl.configure(fg="#16a34a")
+            dot_canvas.itemconfig(
+                halo_id,
+                fill=_lerp_hex("#ffffff", "#bbf7d0", 0.35 + 0.65 * pulse),
+            )
+            dot_canvas.itemconfig(
+                core_id,
+                fill=_lerp_hex("#22c55e", "#15803d", pulse),
+            )
+        else:
+            status_var.set("Connecting...")
+            status_lbl.configure(fg="#d97706")
+            dot_canvas.itemconfig(
+                halo_id,
+                fill=_lerp_hex("#ffffff", "#fde68a", 0.35 + 0.65 * pulse),
+            )
+            dot_canvas.itemconfig(
+                core_id,
+                fill=_lerp_hex("#fcd34d", "#d97706", pulse),
+            )
+
+        if st.scanning:
+            scan_btn.configure(
+                text="Stop",
+                bg="#dc2626",
+                fg="#ffffff",
+                activebackground="#b91c1c",
+                activeforeground="#ffffff",
+            )
+        else:
+            scan_btn.configure(
+                text="Start Scanning",
+                bg="#18181b",
+                fg="#fafafa",
+                activebackground="#27272a",
+                activeforeground="#fafafa",
+            )
+
+    def tick() -> None:
+        update_ui()
+        root.after(30, tick)
 
     def on_close() -> None:
         listener.stop()
         root.destroy()
+        os._exit(0)
 
     root.protocol("WM_DELETE_WINDOW", on_close)
     tick()

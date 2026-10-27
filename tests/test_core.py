@@ -48,6 +48,17 @@ class StandaloneWidgetTests(unittest.TestCase):
         session.reset()
         self.assertEqual(session.snapshot()["unique_count"], 0)
 
+    def test_listener_scanning_toggle(self):
+        session = ScanSession()
+        listener = TcpDeactivatorListener(session=session)
+        self.assertTrue(listener.is_scanning())
+        listener.set_scanning(False)
+        self.assertFalse(listener.is_scanning())
+        self.assertFalse(listener.state().scanning)
+        listener.set_scanning(True)
+        self.assertTrue(listener.is_scanning())
+        self.assertTrue(listener.state().scanning)
+
     def test_tcp_listener_accepts_hax7700_connection(self):
         session = ScanSession()
         with tempfile.TemporaryDirectory() as tmp:

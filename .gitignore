@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 captures/
 sdk-win-x86/*.dll
+sdk-win-x86/config.ini
 *.dll
 *.exe
 .DS_Store

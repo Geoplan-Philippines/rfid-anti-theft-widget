@@ -180,6 +180,7 @@ class IAsynchronousMessage(ctypes.Structure):
 @dataclass
 class ListenerState:
     running: bool = False
+    scanning: bool = True
     mode: str = "listen"
     status_text: str = "Stopped"
     peer: str = ""
@@ -214,10 +215,21 @@ class TcpDeactivatorListener:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._sockets: list[socket.socket] = []
+        self._scanning = True
         self._state = ListenerState()
         # Keep ctypes callbacks rooted for the lifetime of any SDK session
         self._sdk_dll = None
         self._sdk_callbacks: IAsynchronousMessage | None = None
+
+    def set_scanning(self, enabled: bool) -> None:
+        """Enable or pause tag counting without dropping the underlying TCP/SDK connection."""
+        with self._lock:
+            self._scanning = bool(enabled)
+            self._state.scanning = self._scanning
+
+    def is_scanning(self) -> bool:
+        with self._lock:
+            return self._scanning
 
     def state(self) -> ListenerState:
         with self._lock:
@@ -238,6 +250,7 @@ class TcpDeactivatorListener:
         with self._lock:
             self._state = ListenerState(
                 running=True,
+                scanning=self._scanning,
                 mode=mode,
                 status_text=(
                     f"Listening on {host}:{port} for HAX7700"
@@ -364,15 +377,16 @@ class TcpDeactivatorListener:
                 + "\n"
             )
             log_file.flush()
-            for epc in self.decoder.feed(chunk):
-                self.session.observe(epc, source="lan")
+            if self.is_scanning():
+                for epc in self.decoder.feed(chunk):
+                    self.session.observe(epc, source="lan")
         try:
             stream.close()
         except OSError:
             pass
 
-    def start_windows_sdk(self, sdk_dir: str | Path, host: str = "0.0.0.0", port: int = 9090, poll_ms: int = 200) -> None:
-        """Start the 32-bit Windows card_7k.dll listener + auto-read poll loop."""
+    def start_windows_sdk(self, sdk_dir: str | Path, host: str = "0.0.0.0", port: int = 9090, poll_ms: int = 50) -> None:
+        """Start the 32-bit Windows card_7k.dll listener + fast synchronous EPC poll loop."""
         if platform.system() != "Windows" or ctypes.sizeof(ctypes.c_void_p) != 4:
             raise RuntimeError("card_7k.dll requires 32-bit (x86) Python on Windows.")
         self.stop()
@@ -380,6 +394,21 @@ class TcpDeactivatorListener:
         dll_file = sdk_path / "card_7k.dll"
         if not dll_file.is_file():
             raise FileNotFoundError(f"card_7k.dll not found in {sdk_path}")
+
+        # Tune common.dll CConfigMgr INI parameters to minimize inter-command network wait times
+        fast_ini = (
+            "[config]\n"
+            "net_send_data_wait_time=5\n"
+            "net_time_out=120\n"
+            "time_out=80\n"
+            "com_send_data_wait_time=5\n"
+        )
+        for ini_dir in (sdk_path, Path(__import__("sys").executable).resolve().parent):
+            try:
+                (ini_dir / "config.ini").write_text(fast_ini, encoding="ascii")
+            except OSError:
+                pass
+
         if hasattr(os := __import__("os"), "add_dll_directory"):
             os.add_dll_directory(str(sdk_path))
         dll = ctypes.CDLL(str(dll_file))
@@ -388,10 +417,22 @@ class TcpDeactivatorListener:
         dll.open_tcp_server.restype = ctypes.c_int
         dll.close_tcp_server.argtypes = []
         dll.close_tcp_server.restype = None
+        dll.read_epc_id.argtypes = [ctypes.c_char_p, ctypes.POINTER(EpcIdList)]
+        dll.read_epc_id.restype = ctypes.c_int
         dll.start_auto_read.argtypes = [ctypes.c_int]
         dll.start_auto_read.restype = None
         dll.stop_auto_read.argtypes = []
         dll.stop_auto_read.restype = None
+
+        def _ingest_tag_list(tag_list: EpcIdList) -> None:
+            if not self.is_scanning():
+                return
+            count = max(0, min(32, int(tag_list.size)))
+            for idx in range(count):
+                entry = tag_list.epcs[idx]
+                epc = format_epc_bytes(bytes(entry.id))
+                if epc:
+                    self.session.observe(epc, source="sdk")
 
         @PORT_CONNECTING_CB
         def on_connecting(conn_id: bytes | None) -> None:
@@ -410,27 +451,47 @@ class TcpDeactivatorListener:
 
         @OUTPUT_TAGS_CB
         def on_tags(_conn_id: bytes | None, tag_list: EpcIdList) -> None:
-            count = max(0, min(32, int(tag_list.size)))
-            for idx in range(count):
-                entry = tag_list.epcs[idx]
-                epc = format_epc_bytes(bytes(entry.id))
-                if epc:
-                    self.session.observe(epc, source="sdk")
+            _ingest_tag_list(tag_list)
 
         callbacks = IAsynchronousMessage(on_connecting, on_closing, on_tags)
         rc = dll.open_tcp_server(host.encode("ascii"), int(port), callbacks)
         if rc != 0:
             raise RuntimeError(f"card_7k.dll open_tcp_server failed with hax_error_code={rc}")
-        dll.start_auto_read(int(poll_ms))
+
+        stop_event = threading.Event()
+
+        def _fast_poll_worker() -> None:
+            tag_list = EpcIdList()
+            while not stop_event.is_set():
+                with self._lock:
+                    peer = self._state.peer
+                if not peer:
+                    time.sleep(0.02)
+                    continue
+                tag_list.size = 0
+                try:
+                    dll.read_epc_id(peer.encode("latin1"), ctypes.byref(tag_list))
+                    if tag_list.size > 0:
+                        _ingest_tag_list(tag_list)
+                except Exception:
+                    time.sleep(0.05)
+                    continue
+                time.sleep(0.005)
+
+        poll_thread = threading.Thread(target=_fast_poll_worker, daemon=True)
         with self._lock:
+            self._stop = stop_event
+            self._thread = poll_thread
             self._sdk_dll = dll
             self._sdk_callbacks = callbacks
             self._state = ListenerState(
                 running=True,
+                scanning=self._scanning,
                 mode="sdk",
                 sdk_active=True,
-                status_text=f"SDK polling on {host}:{port} ({poll_ms} ms)",
+                status_text=f"SDK fast-polling on {host}:{port}",
             )
+        poll_thread.start()
 
     def stop(self) -> None:
         with self._lock:
