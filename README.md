@@ -12,16 +12,25 @@ A minimal, self-contained Python desktop widget that counts unique tags/EPCs sca
 ## Run on Linux
 
 ```bash
-cd /home/kaizen/Desktop/hax7700-widget-py
 ./start.sh
 ```
 
 ## Run on Windows
 
-Double-click `start-windows.bat` (or run `py -3-32 -m hax7700_widget` for 32-bit `card_7k.dll` SDK polling).
+Place the 32-bit HAX runtime DLLs (`card_7k.dll`, `common.dll`, and VC++/MFC x86 runtime DLLs) in `sdk-win-x86/`, then double-click `start-windows.bat` (or run `py -3-32 -m hax7700_widget`).
 
 ## Run Unit Tests
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+## Hardware Research & Reference Documentation (`docs/`)
+
+- [`docs/HARDWARE-STUDY-HAX7700-HAX9370AMRFID.md`](docs/HARDWARE-STUDY-HAX7700-HAX9370AMRFID.md) — Complete hardware & protocol study reconciling **HAX7700** (`RFID7700 board` inside) and **HAX9370AMRFID** (`RFID7000 V3.4` + `9300` AM boards inside), `eas-data.net` portal architecture, and live `169.254.68.93` bench test results.
+- [`docs/hardware-research.md`](docs/hardware-research.md) — Direct Ethernet (`169.254.68.93` / `USR-TCP232-E2`), TCP Port `9090` / `26`, and WebSocket Port `6432` investigation notes.
+- [`docs/DLL-ANALYSIS.md`](docs/DLL-ANALYSIS.md) & [`docs/SDK-LINUX-LOAD-TEST.md`](docs/SDK-LINUX-LOAD-TEST.md) — Binary analysis of `card_7k.dll` (v2.0.1.0) and `common.dll` (v2.0.6.2, VMProtect-packed) and Linux Wine x86 loader test results.
+- [`docs/sdk-free-testing.md`](docs/sdk-free-testing.md) — Guide for passive TCP/WebSocket capture and read-only `USR-TCP232-E2` inspection.
+- [`docs/supplier-questions.md`](docs/supplier-questions.md) & [`docs/SUPPLIER-REQUEST.md`](docs/SUPPLIER-REQUEST.md) — Specific protocol and SDK questions for Jenny / HAX engineering.
+- [`docs/hardware-resources/`](docs/hardware-resources/) — Official [`HAX7700_desc.pdf`](docs/hardware-resources/HAX7700_desc.pdf) datasheet, extracted high-resolution connector/PCB photos (`hax7700-000.jpg`–`hax7700-002.jpg`), product JSON records (`detail-175.json`, `detail-93.json`), and live `USR-TCP232-E2` status snapshot ([`usr-tcp232-e2-live-snapshot.json`](docs/hardware-resources/usr-tcp232-e2-live-snapshot.json)).
+- [`docs/sdk-reference/`](docs/sdk-reference/) — UTF-8 decoded vendor SDK header ([`hax_7k_adapt.h`](docs/sdk-reference/hax_7k_adapt.h)) and reference samples ([`7k_api_demo.cs`](docs/sdk-reference/7k_api_demo.cs), [`7k_api_demo.cpp`](docs/sdk-reference/7k_api_demo.cpp)).

@@ -177,3 +177,16 @@ Because both the **HAX7700 (`RFID7700 board`)** and **HAX9370AMRFID (`RFID7000 V
    - What exact tag memory bank / offset / 8-byte `hax_7k_data` value does the `HAX7700` write when switching a tag between **Activate (Green)** and **Decode/Deactivate (Red)**?
    - Can the `HAX7700` report scanned EPCs to the checkout PC over its `RS232 Tuning` cable while in Decode mode?
    - On the `HAX9370AMRFID` gate, can the UHF `RFID7000 V3.4` board's autonomous alarm be disabled independently of the 58 kHz AM board, or how are the AM and RFID alarm relays/buzzers linked in the base?
+
+---
+
+## 7. Live Bench Test Findings on `169.254.68.93` (27 October 2026)
+
+1. **`USR-TCP232-E2` Web Server (`webnet 2.0.0`) Compression Requirement:**
+   - Static HTML/JS pages on `http://169.254.68.93/` (`status.html`, `websocket.html`, `ser2net1.html`, `js/public.js`) are stored as `.gz` on flash and require `Accept-Encoding: gzip` (`curl --compressed`); without it, `webnet 2.0.0` returns `404 Not Found`.
+2. **True UART Traffic Counter Endpoint (`temp_status.json`):**
+   - Selecting a port via `/por.cgi?port=0` or `/por.cgi?port=1` and reading `/temp_status.json` ([`usr-tcp232-e2-live-snapshot.json`](hardware-resources/usr-tcp232-e2-live-snapshot.json)) exposes the live per-UART byte counters (`txcounta`, `rxcounta`, `constatea`).
+3. **Verified Command-Polled Behavior With Tag on Pad:**
+   - With a live TCP connection established from `169.254.68.93` to `169.254.68.94:9090` (`constatea: "CONNECTED"`) and a physical RFID tag placed directly on top of the HAX7700 pad for over an hour (`runtime: 0day: 1hour: 13min`), both Port 1 (`portview: 0`) and Port 2 (`portview: 1`) reported `txcounta: "0 bytes"` and `rxcounta: "0 bytes"`.
+   - Port 1 (`port0.json`) has `"reconnecttime": "60"`, causing the `USR-TCP232-E2` to close and re-open its TCP client connection to `169.254.68.94:9090` every 60.000 seconds when idle (`169.254.68.93:5070` -> `5071` -> `5072`).
+   - This proves that the internal `RFID7700` board is **command-polled** and waits for the host (via `card_7k.dll` / `card_7k7.dll` on Windows or the raw HAX inventory command frame) before transmitting tag EPCs over UART/Ethernet.
