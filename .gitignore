@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+captures/
+sdk-win-x86/*.dll
+*.dll
+*.exe
+.DS_Store
+Thumbs.db
