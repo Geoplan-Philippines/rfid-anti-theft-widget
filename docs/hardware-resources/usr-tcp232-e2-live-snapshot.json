@@ -1,0 +1,65 @@
+{
+  "captured_at": "2026-10-27T01:55:34Z",
+  "host": "169.254.68.93",
+  "server_header": "webnet 2.0.0 (requires Accept-Encoding: gzip for static .html/.js assets)",
+  "module": {
+    "modename": "TCP232-E2",
+    "usermac": "38-F4-06-10-5D-43",
+    "webport": "80",
+    "websockport": "6432",
+    "websocklogport": "6433",
+    "websocketpoint": "1",
+    "seachport": "48899",
+    "seachkey": "WWW.USR.CN"
+  },
+  "temp_status_port0": {
+    "curripcn": "169.254.68.93",
+    "usermac": "38-F4-06-10-5D-43",
+    "runtime": "0day: 1hour: 13min",
+    "port_num": "0",
+    "portview": "0",
+    "constatea": "CONNECTED",
+    "txcounta": "0 bytes",
+    "rxcounta": "0 bytes",
+    "constateb": "IDLE",
+    "txcountb": "0 bytes",
+    "rxcountb": "0 bytes"
+  },
+  "temp_status_port1": {
+    "curripcn": "169.254.68.93",
+    "usermac": "38-F4-06-10-5D-43",
+    "runtime": "0day: 1hour: 13min",
+    "port_num": "0",
+    "portview": "1",
+    "constatea": "LISTEN",
+    "txcounta": "0 bytes",
+    "rxcounta": "0 bytes",
+    "constateb": "IDLE",
+    "txcountb": "0 bytes",
+    "rxcountb": "0 bytes"
+  },
+  "port0_config": {
+    "buad": "115200",
+    "datasize": "8",
+    "parity": "0",
+    "stopbit": "1",
+    "flowc": "0",
+    "serialmode": "4",
+    "workmodea": "2 (TCP Client)",
+    "rurl": "169.254.68.94",
+    "rporta": "9090",
+    "reconnecttime": "60"
+  },
+  "port1_config": {
+    "buad": "115200",
+    "datasize": "8",
+    "parity": "0",
+    "stopbit": "1",
+    "flowc": "0",
+    "serialmode": "4",
+    "workmodea": "4 (TCP Server)",
+    "lports": "26",
+    "rporta": "26",
+    "reconnecttime": "0"
+  }
+}
