@@ -66,7 +66,11 @@ def local_ipv4_addresses() -> list[str]:
 
 
 class ScanSession:
-    """Counts each unique EPC once per session and ignores repeat reads of the same tag."""
+    """Counts each unique EPC once per session and ignores repeat reads of the same tag.
+
+    Each session has its own `session_id` (a UUID, used as the sale's clientTransactionId).
+    `finish()` ends it: reads that arrive afterwards are ignored so the sale matches the count shown.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -75,7 +79,9 @@ class ScanSession:
         self._total_reads = 0
         self._last_epc: str | None = None
         self._last_source = "idle"
+        self._session_id = str(uuid.uuid4())
         self._started_at = utc_now()
+        self._ended_at: str | None = None
 
     def observe(self, epc: str | None = None, source: str = "scanner") -> dict:
         if epc is None and source == "demo":
@@ -85,6 +91,10 @@ class ScanSession:
             if not normalized:
                 raise ValueError("EPC must be 2–24 non-zero hexadecimal characters.")
         with self._lock:
+            if self._ended_at is not None:
+                snap = self.snapshot()
+                snap["is_new"] = False
+                return snap
             self._total_reads += 1
             self._last_epc = normalized
             self._last_source = source
@@ -109,19 +119,30 @@ class ScanSession:
             self._total_reads = 0
             self._last_epc = None
             self._last_source = "idle"
+            self._session_id = str(uuid.uuid4())
             self._started_at = utc_now()
+            self._ended_at = None
+            return self.snapshot()
+
+    def finish(self) -> dict:
+        """End the session (later reads are ignored) and return its final snapshot."""
+        with self._lock:
+            if self._ended_at is None:
+                self._ended_at = utc_now()
             return self.snapshot()
 
     def snapshot(self) -> dict:
         with self._lock:
             unique = len(self._items)
             return {
+                "session_id": self._session_id,
                 "unique_count": unique,
                 "total_reads": self._total_reads,
                 "repeat_reads": self._total_reads - unique,
                 "last_epc": self._last_epc,
                 "last_source": self._last_source,
                 "started_at": self._started_at,
+                "ended_at": self._ended_at,
                 "items": list(reversed(self._items)),
             }
 

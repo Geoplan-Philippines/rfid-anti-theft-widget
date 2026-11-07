@@ -3,6 +3,8 @@ __pycache__/
 *.pyo
 .venv/
 captures/
+pending/
+settings.json
 sdk-win-x86/*.dll
 sdk-win-x86/config.ini
 *.dll

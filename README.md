@@ -3,11 +3,31 @@
 A minimal, self-contained Python desktop widget that counts unique tags/EPCs scanned on the **HAX7700 Deactivator (`RFID7700` board)**.
 
 - **Zero external Python package dependencies** (uses Python standard library + native `GTK3` on Linux or `Tkinter` on Windows).
-- **Unique EPC deduplication:** Each physical tag EPC increments the session counter once (`1`, `2`, `3`…); repeat reads of the same EPC are ignored. Clicking **Start Scanning** resets the count and starts a fresh scan session; clicking **Stop** pauses counting.
+- **Unique EPC deduplication:** Each physical tag EPC increments the session counter once (`1`, `2`, `3`…); repeat reads of the same EPC are ignored. Clicking **Start Scanning** starts a new sale at `0`; clicking **Stop** ends it and sends its tags to the anti-theft server as one transaction (see [Server Settings](#server-settings-settingsjson)).
 - **Breathing connection indicator:** Displays an amber breathing indicator (`Connecting...`) while waiting for the HAX7700 and switches to green (`Connected`) once the pad connects on TCP port `9090`.
 - **High-speed HAX7700 scanner support (`~245 ms` per scan):**
   - **Windows x86 Native HAX SDK (`sdk-win-x86/card_7k.dll` + `common.dll`):** When run with 32-bit Python on Windows (`start-windows.bat`), automatically tunes `common.dll`'s `config.ini` network wait times (`net_send_data_wait_time=5`, `net_time_out=120`, `time_out=80`), opens the TCP listener on `0.0.0.0:9090`, and runs a dedicated fast-polling worker (`read_epc_id`) every `~245 ms`.
   - **Linux / Windows Direct TCP Listener (`0.0.0.0:9090`):** Accepts the inbound TCP connection from the HAX7700's internal `USR-TCP232-E2` (`169.254.68.93`).
+
+---
+
+## Server Settings (`settings.json`)
+
+When you press **Stop**, the widget sends the customer's tags to the anti-theft server. Tell it where to send them:
+
+1. Copy `settings.example.json` to `settings.json` (same folder as `start-windows.bat`).
+2. Open `settings.json` in Notepad and change the values:
+
+   | Setting | What to put | Example |
+   |---|---|---|
+   | `serverUrl` | The server's address, without `/api/v1` | `http://192.168.1.10:3000` |
+   | `storeCode` | Your store's code | `MUJI-NUVALI` |
+   | `deviceId` | A name for this till | `POS-03-HAX7700` |
+   | `cashierName` | Optional, can stay `""` | `Ana` |
+
+3. Restart the widget. If something is missing, the widget says so in red and **Start Scanning** stays greyed out.
+
+If the server can't be reached, sales wait in the `pending/` folder and are sent automatically later, even after a restart. The widget shows how many are waiting. Sales the server refuses go to `pending/rejected/` with a note saying why; they are not retried.
 
 ---
 
@@ -65,6 +85,8 @@ py -3-32 -m unittest discover -s tests -v
 # Linux
 python3 -m unittest discover -s tests -v
 ```
+
+To try the widget without the real server, run `python tests/fake_server.py --port 3000` and set `"serverUrl": "http://127.0.0.1:3000"`. Each request it receives is printed as one line; add `--fail 2` to make it answer `503` twice first.
 
 ## Hardware Research & Reference Documentation (`docs/`)
 

@@ -9,7 +9,27 @@ from pathlib import Path
 import platform
 import time
 
+from .api import TransactionOutbox, pending_line, status_line
 from .core import ScanSession, TcpDeactivatorListener
+
+# Text colors for the tones returned by api.status_line() / api.pending_line()
+_TONE_COLORS = {
+    "muted": "#71717a",
+    "busy": "#2563eb",
+    "ok": "#16a34a",
+    "warn": "#d97706",
+    "error": "#dc2626",
+}
+
+
+def _toggle_scan(session: ScanSession, listener: TcpDeactivatorListener, outbox: TransactionOutbox) -> None:
+    """Start Scanning begins a new sale; Stop ends it and hands it to the outbox to send (GTK and Tk)."""
+    if listener.is_scanning():
+        listener.set_scanning(False)
+        outbox.submit(session.finish())
+    else:
+        session.reset()
+        listener.set_scanning(True)
 
 
 def _auto_start_listener(listener: TcpDeactivatorListener, sdk_dir: Path, port: int = 9090) -> None:
@@ -36,6 +56,7 @@ def _lerp_hex(c1: str, c2: str, t: float) -> str:
 def run_gtk_widget(
     session: ScanSession,
     listener: TcpDeactivatorListener,
+    outbox: TransactionOutbox,
     sdk_dir: Path,
     port: int = 9090,
 ) -> int:
@@ -89,7 +110,21 @@ def run_gtk_widget(
       border-radius: 6px;
       padding: 10px 14px;
     }
-    """
+    .primary-btn:disabled {
+      background-color: #e4e4e7;
+    }
+    .primary-btn:disabled label {
+      color: #a1a1aa;
+    }
+    .sync-text {
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .pending-text {
+      font-size: 12px;
+      font-weight: 600;
+    }
+    """ + "".join(f".tone-{tone} {{ color: {color}; }}\n" for tone, color in _TONE_COLORS.items()).encode()
     provider = Gtk.CssProvider()
     provider.load_from_data(css)
     screen = Gtk.Window().get_screen()
@@ -98,7 +133,7 @@ def run_gtk_widget(
     listener.set_scanning(False)
 
     win = Gtk.Window(title="HAX7700")
-    win.set_default_size(290, 230)
+    win.set_default_size(290, 280)
     win.set_resizable(False)
     win.set_keep_above(True)
     win.set_border_width(16)
@@ -134,7 +169,30 @@ def run_gtk_widget(
 
     scan_btn = Gtk.Button(label="Start Scanning")
     scan_btn.get_style_context().add_class("primary-btn")
+    # Stays disabled until settings.json is complete; the status line says what is missing
+    scan_btn.set_sensitive(outbox.ready)
     root.pack_end(scan_btn, False, False, 0)
+
+    # Sync status line and the number of sales still waiting to be sent, just above the button
+    footer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+    sync_lbl = Gtk.Label(label="", xalign=0)
+    sync_lbl.set_line_wrap(True)
+    sync_lbl.set_max_width_chars(36)
+    sync_lbl.get_style_context().add_class("sync-text")
+    pending_lbl = Gtk.Label(label="", xalign=0)
+    pending_lbl.get_style_context().add_class("pending-text")
+    footer.pack_start(sync_lbl, False, False, 0)
+    footer.pack_start(pending_lbl, False, False, 0)
+    root.pack_end(footer, False, False, 0)
+
+    def show_line(label: Gtk.Label, text: str, tone: str) -> None:
+        if label.get_text() != text:
+            label.set_text(text)
+        ctx = label.get_style_context()
+        if not ctx.has_class(f"tone-{tone}"):
+            for name in _TONE_COLORS:
+                ctx.remove_class(f"tone-{name}")
+            ctx.add_class(f"tone-{tone}")
 
     def on_draw_dot(_area, cr) -> bool:
         st = listener.state()
@@ -162,6 +220,9 @@ def run_gtk_widget(
         st = listener.state()
         count_lbl.set_text(str(snap["unique_count"]))
         status_lbl.set_text("Connected" if st.peer else "Connecting...")
+        sync = outbox.state()
+        show_line(sync_lbl, *status_line(sync))
+        show_line(pending_lbl, *pending_line(sync))
         btn_ctx = scan_btn.get_style_context()
         if st.scanning:
             scan_btn.set_label("Stop")
@@ -175,21 +236,19 @@ def run_gtk_widget(
         return True
 
     def on_toggle_scan(_btn: Gtk.Button) -> None:
-        if listener.is_scanning():
-            listener.set_scanning(False)
-        else:
-            session.reset()
-            listener.set_scanning(True)
+        _toggle_scan(session, listener, outbox)
         refresh_ui()
 
     def on_destroy(_win: Gtk.Window) -> None:
         listener.stop()
+        outbox.stop()
         Gtk.main_quit()
 
     scan_btn.connect("clicked", on_toggle_scan)
     win.connect("destroy", on_destroy)
 
     _auto_start_listener(listener, sdk_dir, port=port)
+    outbox.start()
     win.show_all()
     refresh_ui()
     GLib.timeout_add(30, refresh_ui)
@@ -200,6 +259,7 @@ def run_gtk_widget(
 def run_tk_widget(
     session: ScanSession,
     listener: TcpDeactivatorListener,
+    outbox: TransactionOutbox,
     sdk_dir: Path,
     port: int = 9090,
 ) -> int:
@@ -207,12 +267,13 @@ def run_tk_widget(
     listener.set_scanning(False)
     # Start native Windows SDK (card_7k.dll / mfc140.dll) before initializing Tcl/Tk
     _auto_start_listener(listener, sdk_dir, port=port)
+    outbox.start()
 
     import tkinter as tk
 
     root = tk.Tk()
     root.title("HAX7700")
-    root.geometry("290x230")
+    root.geometry("290x280")
     root.resizable(False, False)
     root.attributes("-topmost", True)
     root.configure(bg="#ffffff", padx=18, pady=14)
@@ -255,9 +316,8 @@ def run_tk_widget(
 
     tk.Frame(root, bg="#f4f4f5", height=1).pack(fill="x", pady=(0, 8))
 
-    # Center Big Counter
+    # Center Big Counter (packed last so it only takes the space the footer and button leave)
     center = tk.Frame(root, bg="#ffffff")
-    center.pack(expand=True, fill="both")
     count_var = tk.StringVar(value="0")
     tk.Label(
         center,
@@ -269,11 +329,7 @@ def run_tk_widget(
 
     # Start Scanning / Stop Button
     def on_toggle_scan() -> None:
-        if listener.is_scanning():
-            listener.set_scanning(False)
-        else:
-            session.reset()
-            listener.set_scanning(True)
+        _toggle_scan(session, listener, outbox)
         update_ui()
 
     scan_btn = tk.Button(
@@ -291,11 +347,50 @@ def run_tk_widget(
         command=on_toggle_scan,
     )
     scan_btn.pack(side="bottom", fill="x", pady=(8, 0))
+    if not outbox.ready:
+        # Stays disabled until settings.json is complete; the status line says what is missing
+        scan_btn.configure(state="disabled", bg="#e4e4e7", disabledforeground="#a1a1aa", cursor="arrow")
+
+    # Sync status line and the number of sales still waiting to be sent
+    footer = tk.Frame(root, bg="#ffffff")
+    footer.pack(side="bottom", fill="x")
+    sync_var = tk.StringVar(value="")
+    sync_lbl = tk.Label(
+        footer,
+        textvariable=sync_var,
+        font=("Segoe UI", 9, "bold"),
+        fg=_TONE_COLORS["muted"],
+        bg="#ffffff",
+        anchor="w",
+        justify="left",
+        wraplength=254,
+    )
+    sync_lbl.pack(fill="x")
+    pending_var = tk.StringVar(value="")
+    pending_lbl = tk.Label(
+        footer,
+        textvariable=pending_var,
+        font=("Segoe UI", 9),
+        fg=_TONE_COLORS["muted"],
+        bg="#ffffff",
+        anchor="w",
+    )
+    pending_lbl.pack(fill="x")
+
+    center.pack(expand=True, fill="both")
 
     def update_ui() -> None:
         snap = session.snapshot()
         st = listener.state()
         count_var.set(str(snap["unique_count"]))
+
+        sync = outbox.state()
+        text, tone = status_line(sync)
+        sync_var.set(text)
+        sync_lbl.configure(fg=_TONE_COLORS[tone])
+        text, tone = pending_line(sync)
+        pending_var.set(text)
+        pending_lbl.configure(fg=_TONE_COLORS[tone])
 
         # Smooth breathing animation (sine wave 0.0 .. 1.0)
         pulse = 0.5 + 0.5 * math.sin(time.monotonic() * 4.2)
@@ -325,6 +420,8 @@ def run_tk_widget(
                 fill=_lerp_hex("#fcd34d", "#d97706", pulse),
             )
 
+        if not outbox.ready:
+            return
         if st.scanning:
             scan_btn.configure(
                 text="Stop",
@@ -348,6 +445,7 @@ def run_tk_widget(
 
     def on_close() -> None:
         listener.stop()
+        outbox.stop()
         root.destroy()
         os._exit(0)
 

@@ -3,6 +3,7 @@ import socket
 import tempfile
 import time
 import unittest
+import uuid
 
 from hax7700_widget.core import (
     EpcIdList,
@@ -47,6 +48,25 @@ class StandaloneWidgetTests(unittest.TestCase):
 
         session.reset()
         self.assertEqual(session.snapshot()["unique_count"], 0)
+
+    def test_finished_session_ignores_late_reads_and_reset_starts_a_new_sale(self):
+        session = ScanSession()
+        first_id = session.reset()["session_id"]
+        session.observe("3034257BF400B78000040001", "sdk")
+        done = session.finish()
+        self.assertIsNotNone(done["ended_at"])
+        self.assertEqual(session.finish()["ended_at"], done["ended_at"])
+
+        late = session.observe("3034257BF400B78000040002", "sdk")
+        self.assertFalse(late["is_new"])
+        self.assertEqual(late["unique_count"], 1)
+        self.assertEqual(late["total_reads"], 1)
+
+        fresh = session.reset()
+        self.assertNotEqual(fresh["session_id"], first_id)
+        self.assertEqual(uuid.UUID(fresh["session_id"]).version, 4)
+        self.assertIsNone(fresh["ended_at"])
+        self.assertEqual(session.observe("3034257BF400B78000040002", "sdk")["unique_count"], 1)
 
     def test_listener_scanning_toggle(self):
         session = ScanSession()

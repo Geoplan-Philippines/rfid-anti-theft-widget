@@ -9,7 +9,7 @@ Instructions and hardware context for AI coding agents and developers working in
 This repository is a **standalone, zero-dependency Python desktop widget** whose sole purpose is to **count unique RFID tags/EPCs scanned on the HAX7700 Deactivator (`RFID7700` board)**:
 - Each distinct 12-byte EPC increments the session counter once (`1`, `2`, `3`…).
 - Repeat reads of the same EPC within the active session are ignored automatically (`repeat_reads`).
-- Clicking **New session** resets the session counter to `0`.
+- Clicking **Start Scanning** starts a new session (new UUID `clientTransactionId`, counter `0`). Clicking **Stop** sends the session's tags as one sale to `POST {serverUrl}/api/v1/transactions` (`hax7700_widget/api.py`); a sale is only deleted from `pending/` once the server confirms it (`201`/`200`).
 - Keep the application lightweight, self-contained, and standard-library-only (`GTK3` via `gi.repository.Gtk` on Linux; `tkinter` on Windows).
 
 ---
@@ -59,16 +59,20 @@ Read [`docs/HARDWARE-STUDY-HAX7700-HAX9370AMRFID.md`](docs/HARDWARE-STUDY-HAX770
 2. **Read-Only Tag Operations:** Never call `write_epc_id`, `write_data`, `set_config`, or `enable_alarm` in `card_7k.dll` (note that `docs/sdk-reference/7k_api_demo.cpp` mutates tag/device state and must never be run against production hardware).
 3. **No Guessed EPC Decoding:** `PendingHax7700Decoder` must return `[]` until the actual `RFID7700` / `RFID7000` wire framing and CRC (`CCRC` / `CCodingMgr`) are verified from captures or vendor docs.
 4. **Native Struct Packing:** Always keep `_pack_ = 1` on `EpcIdSt` (18 bytes), `EpcIdList` (612 bytes), and `IAsynchronousMessage` (12 bytes on x86), verified by `tests/test_core.py`.
-5. **Repository Hygiene:** Never commit `.dll`, `.exe`, `captures/`, `__pycache__/`, or device credentials.
+5. **Repository Hygiene:** Never commit `.dll`, `.exe`, `captures/`, `pending/`, `settings.json`, `__pycache__/`, or device credentials.
+6. **Same Behavior in GTK and Tk:** Put Start/Stop and sending logic in shared code (`_toggle_scan` in `gui.py`, `api.py`), not in one toolkit's handlers.
 
 ---
 
 ## 5. Repository Layout & Commands
 
 - `hax7700_widget/core.py` — EPC formatting/normalization, `ScanSession` deduplication, `TcpDeactivatorListener` (direct TCP + 32-bit Windows `card_7k.dll` ctypes driver), and `EpcIdSt` / `EpcIdList` structures.
+- `hax7700_widget/api.py` — `settings.json` loading, transaction payload building, the HTTP POST, and `TransactionOutbox` (on-disk `pending/` queue + background sender with backoff), shared by both UIs.
 - `hax7700_widget/gui.py` — Standalone desktop counter widget (`run_gtk_widget` for Linux GTK3, `run_tk_widget` for Windows Tkinter).
-- `hax7700_widget/__main__.py` — CLI entry point (`python3 -m hax7700_widget [--port 9090] [--sdk-dir sdk-win-x86]`).
+- `hax7700_widget/__main__.py` — CLI entry point (`python3 -m hax7700_widget [--port 9090] [--sdk-dir sdk-win-x86] [--settings settings.json] [--pending-dir pending]`).
+- `settings.example.json` — Template for the per-till `settings.json` (`serverUrl`, `storeCode`, `deviceId`, optional `cashierName`).
 - `tests/test_core.py` — Unit tests for ABI struct layout, EPC formatting, session deduplication, and TCP listener socket capture.
+- `tests/test_api.py` + `tests/fake_server.py` — Unit tests for settings, payloads, send/retry rules, and the restart-safe queue, against an in-process copy of the server's transactions endpoint.
 - `docs/` — Complete hardware study, `USR-TCP232-E2` live snapshot, `HAX7700_desc.pdf`, PCB/connector photos, DLL analysis, and decoded `hax_7k_adapt.h`.
 
 ```bash
