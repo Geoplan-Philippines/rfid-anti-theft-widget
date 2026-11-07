@@ -22,6 +22,11 @@ def main() -> int:
         help="Inbound TCP port for HAX7000 RFID Gate ServerControl/Alarm (default: 9000)",
     )
     parser.add_argument(
+        "--serial",
+        default=None,
+        help="RS232 serial port (e.g. /dev/ttyUSB0 on Linux or COM3 on Windows; auto-detected if omitted)",
+    )
+    parser.add_argument(
         "--db",
         default=str(root_dir / "items.db"),
         help="SQLite database file for items table (default: items.db)",
@@ -34,7 +39,7 @@ def main() -> int:
     parser.add_argument(
         "--capture-dir",
         default=str(root_dir / "captures"),
-        help="Directory for raw TCP packet logs",
+        help="Directory for raw TCP/RS232 packet logs",
     )
     args = parser.parse_args()
 
@@ -42,7 +47,12 @@ def main() -> int:
     item_db = ItemDatabase(db_path=args.db)
     session = ScanSession(item_db=item_db)
     listener = TcpDeactivatorListener(session=session, capture_dir=args.capture_dir)
-    gate = RfidGateController(item_db=item_db, sdk_dir=sdk_dir, capture_dir=args.capture_dir)
+    gate = RfidGateController(
+        item_db=item_db,
+        sdk_dir=sdk_dir,
+        capture_dir=args.capture_dir,
+        session=session,
+    )
 
     try:
         return run_gtk_widget(
@@ -53,6 +63,7 @@ def main() -> int:
             item_db=item_db,
             gate=gate,
             gate_port=args.gate_port,
+            serial_port=args.serial,
         )
     except Exception:
         return run_tk_widget(
@@ -63,6 +74,7 @@ def main() -> int:
             item_db=item_db,
             gate=gate,
             gate_port=args.gate_port,
+            serial_port=args.serial,
         )
 
 

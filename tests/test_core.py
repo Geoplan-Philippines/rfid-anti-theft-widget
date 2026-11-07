@@ -158,7 +158,7 @@ class StandaloneWidgetTests(unittest.TestCase):
             port = probe.getsockname()[1]
             probe.close()
 
-            gate.start(host="127.0.0.1", port=port)
+            gate.start(host="127.0.0.1", port=port, serial_port="")
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=2.0) as client:
                     client.settimeout(2.0)

@@ -41,6 +41,7 @@ def run_gtk_widget(
     item_db: ItemDatabase | None = None,
     gate: RfidGateController | None = None,
     gate_port: int = 9000,
+    serial_port: str | None = None,
 ) -> int:
     import gi
 
@@ -51,7 +52,9 @@ def run_gtk_widget(
         item_db = session.item_db or ItemDatabase()
         session.item_db = item_db
     if gate is None:
-        gate = RfidGateController(item_db=item_db, sdk_dir=sdk_dir)
+        gate = RfidGateController(item_db=item_db, sdk_dir=sdk_dir, session=session)
+    else:
+        gate.session = session
 
     css = b"""
     window {
@@ -77,7 +80,7 @@ def run_gtk_widget(
       color: #3f3f46;
       border-radius: 8px;
       padding: 14px;
-      font-size: 14px;
+      font-size: 13px;
       font-weight: 700;
     }
     .gate-box-pass {
@@ -135,6 +138,7 @@ def run_gtk_widget(
     Gtk.StyleContext.add_provider_for_screen(screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
     listener.set_scanning(False)
+    gate.set_register_mode(False)
 
     win = Gtk.Window(title="HAX7700 & RFID Gate")
     win.set_default_size(520, 420)
@@ -269,12 +273,12 @@ def run_gtk_widget(
         st = listener.state()
         gst = gate.state()
 
-        if st.peer and gst.peer:
-            status_lbl.set_text("Pad + Gate Connected")
-        elif gst.peer:
-            status_lbl.set_text("Gate Connected")
+        if gst.peer:
+            status_lbl.set_text(f"Connected ({gst.peer})")
         elif st.peer:
-            status_lbl.set_text("Pad Connected")
+            status_lbl.set_text(f"Connected ({st.peer})")
+        elif gst.serial_port:
+            status_lbl.set_text(f"Opening {gst.serial_port}...")
         else:
             status_lbl.set_text("Connecting...")
 
@@ -293,12 +297,18 @@ def run_gtk_widget(
         ctx.remove_class("gate-box-pass")
         ctx.remove_class("gate-box-alarm")
 
-        if gst.last_action == "ALARM":
+        if gst.last_error:
+            ctx.add_class("gate-box-alarm")
+            gate_banner.set_text(gst.last_error)
+        elif gst.last_action == "ALARM":
             ctx.add_class("gate-box-alarm")
             gate_banner.set_text(f"GATE ALARM! — {gst.last_epc} (Sold = False)")
         elif gst.last_action == "PASS":
             ctx.add_class("gate-box-pass")
             gate_banner.set_text(f"NO ALARM — {gst.last_epc} (Sold = True)")
+        elif gst.last_action == "REGISTERED":
+            ctx.add_class("gate-box-pass")
+            gate_banner.set_text(gst.last_summary)
         else:
             ctx.add_class("gate-box-idle")
             gate_banner.set_text("Gate Status: Waiting for tag...")
@@ -310,9 +320,11 @@ def run_gtk_widget(
     def on_toggle_scan(_btn: Gtk.Button) -> None:
         if listener.is_scanning():
             listener.set_scanning(False)
+            gate.set_register_mode(False)
         else:
             session.reset()
             listener.set_scanning(True)
+            gate.set_register_mode(True)
         refresh_ui()
 
     def on_toggle_sold(_btn=None) -> None:
@@ -348,7 +360,7 @@ def run_gtk_widget(
     win.connect("destroy", on_destroy)
 
     _auto_start_listener(listener, sdk_dir, port=port)
-    gate.start(host="0.0.0.0", port=gate_port)
+    gate.start(host="0.0.0.0", port=gate_port, serial_port=serial_port)
     win.show_all()
     refresh_items_table(force=True)
     refresh_ui()
@@ -365,16 +377,20 @@ def run_tk_widget(
     item_db: ItemDatabase | None = None,
     gate: RfidGateController | None = None,
     gate_port: int = 9000,
+    serial_port: str | None = None,
 ) -> int:
     if item_db is None:
         item_db = session.item_db or ItemDatabase()
         session.item_db = item_db
     if gate is None:
-        gate = RfidGateController(item_db=item_db, sdk_dir=sdk_dir)
+        gate = RfidGateController(item_db=item_db, sdk_dir=sdk_dir, session=session)
+    else:
+        gate.session = session
 
     listener.set_scanning(False)
+    gate.set_register_mode(False)
     _auto_start_listener(listener, sdk_dir, port=port)
-    gate.start(host="0.0.0.0", port=gate_port)
+    gate.start(host="0.0.0.0", port=gate_port, serial_port=serial_port)
 
     import tkinter as tk
     from tkinter import ttk
@@ -426,7 +442,7 @@ def run_tk_widget(
     gate_banner = tk.Label(
         root,
         textvariable=gate_var,
-        font=("Segoe UI", 11, "bold"),
+        font=("Segoe UI", 10, "bold"),
         bg="#f4f4f5",
         fg="#3f3f46",
         pady=12,
@@ -495,9 +511,11 @@ def run_tk_widget(
     def on_toggle_scan() -> None:
         if listener.is_scanning():
             listener.set_scanning(False)
+            gate.set_register_mode(False)
         else:
             session.reset()
             listener.set_scanning(True)
+            gate.set_register_mode(True)
         update_ui()
 
     def on_toggle_sold(_event=None) -> None:
@@ -570,15 +588,15 @@ def run_tk_widget(
         halo_r = 4.0 + 3.0 * pulse
         dot_canvas.coords(halo_id, 8.0 - halo_r, 8.0 - halo_r, 8.0 + halo_r, 8.0 + halo_r)
 
-        if st.peer and gst.peer:
-            status_var.set("Pad + Gate Connected")
-            status_lbl.configure(fg="#16a34a")
-        elif gst.peer:
-            status_var.set("Gate Connected")
+        if gst.peer:
+            status_var.set(f"Connected ({gst.peer})")
             status_lbl.configure(fg="#16a34a")
         elif st.peer:
-            status_var.set("Pad Connected")
+            status_var.set(f"Connected ({st.peer})")
             status_lbl.configure(fg="#16a34a")
+        elif gst.serial_port:
+            status_var.set(f"Opening {gst.serial_port}...")
+            status_lbl.configure(fg="#d97706")
         else:
             status_var.set("Connecting...")
             status_lbl.configure(fg="#d97706")
@@ -607,11 +625,17 @@ def run_tk_widget(
                 activeforeground="#ffffff",
             )
 
-        if gst.last_action == "ALARM":
+        if gst.last_error:
+            gate_var.set(gst.last_error)
+            gate_banner.configure(bg="#fee2e2", fg="#991b1b")
+        elif gst.last_action == "ALARM":
             gate_var.set(f"GATE ALARM! — {gst.last_epc} (Sold = False)")
             gate_banner.configure(bg="#fee2e2", fg="#991b1b")
         elif gst.last_action == "PASS":
             gate_var.set(f"NO ALARM — {gst.last_epc} (Sold = True)")
+            gate_banner.configure(bg="#dcfce7", fg="#166534")
+        elif gst.last_action == "REGISTERED":
+            gate_var.set(gst.last_summary)
             gate_banner.configure(bg="#dcfce7", fg="#166534")
         else:
             gate_var.set("Gate Status: Waiting for tag...")

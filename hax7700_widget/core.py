@@ -1,4 +1,4 @@
-"""Core EPC session counter, SQLite item store (sold: true/false), HAX7700 Pad listener, and HAX7000 RFID Gate controller (SDK 2.1.2.0)."""
+"""Core EPC session counter, SQLite item store (sold: true/false), RS232/TCP HAX7700 Pad listener, and HAX7000 RFID Gate controller (SDK 2.1.2.0)."""
 
 from __future__ import annotations
 
@@ -6,9 +6,12 @@ from collections import deque
 import ctypes
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import glob
 import json
+import os
 from pathlib import Path
 import platform
+import select
 import socket
 import sqlite3
 import threading
@@ -106,6 +109,212 @@ def parse_epc_json_payload(raw_json: str | bytes) -> list[dict]:
             ant_id = 1
         results.append({"ant_id": ant_id, "epc_id": epc})
     return results
+
+
+def detect_serial_ports() -> list[str]:
+    """Detect available RS232 serial ports on Linux (/dev/ttyUSB*, /dev/ttyACM*) or Windows (COM1..COM32)."""
+    if platform.system() == "Windows":
+        ports: list[str] = []
+        kernel32 = ctypes.windll.kernel32
+        for i in range(1, 33):
+            name = f"COM{i}"
+            target_buf = ctypes.create_unicode_buffer(256)
+            if kernel32.QueryDosDeviceW(name, target_buf, 256) != 0:
+                ports.append(name)
+        return ports
+    found = sorted(glob.glob("/dev/ttyUSB*")) + sorted(glob.glob("/dev/ttyACM*"))
+    return found
+
+
+class RawSerialPort:
+    """Zero-dependency cross-platform RS232 serial port wrapper (115200 8N1) for Linux and Windows."""
+
+    def __init__(self, port: str, baudrate: int = 115200) -> None:
+        self.port = port
+        self.baudrate = baudrate
+        self._fd: int | None = None
+        self._handle: int | None = None
+        self._open()
+
+    def _open(self) -> None:
+        if platform.system() == "Windows":
+            self._open_windows()
+        else:
+            self._open_posix()
+
+    def _open_posix(self) -> None:
+        import termios
+
+        fd = os.open(self.port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+        try:
+            attrs = termios.tcgetattr(fd)
+            baud_map = {
+                9600: termios.B9600,
+                19200: termios.B19200,
+                38400: termios.B38400,
+                57600: termios.B57600,
+                115200: termios.B115200,
+            }
+            bconst = baud_map.get(self.baudrate, termios.B115200)
+            attrs[0] = 0  # iflag
+            attrs[1] = 0  # oflag
+            attrs[2] = termios.CS8 | termios.CREAD | termios.CLOCAL  # cflag: 8N1
+            attrs[3] = 0  # lflag (raw)
+            attrs[4] = bconst  # ispeed
+            attrs[5] = bconst  # ospeed
+            attrs[6][termios.VMIN] = 0
+            attrs[6][termios.VTIME] = 0
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+            termios.tcflush(fd, termios.TCIOFLUSH)
+            self._fd = fd
+        except Exception:
+            os.close(fd)
+            raise
+
+    def _open_windows(self) -> None:
+        kernel32 = ctypes.windll.kernel32
+        GENERIC_READ = 0x80000000
+        GENERIC_WRITE = 0x40000000
+        OPEN_EXISTING = 3
+        INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+        device_path = self.port if self.port.startswith("\\\\.\\") else f"\\\\.\\{self.port}"
+        handle = kernel32.CreateFileW(
+            device_path,
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            None,
+            OPEN_EXISTING,
+            0,
+            None,
+        )
+        if handle == INVALID_HANDLE_VALUE or handle == 0:
+            err = kernel32.GetLastError()
+            raise OSError(f"Cannot open serial port {self.port} (WinError {err})")
+
+        class DCB(ctypes.Structure):
+            _fields_ = [
+                ("DCBlength", ctypes.c_uint32),
+                ("BaudRate", ctypes.c_uint32),
+                ("fFlags", ctypes.c_uint32),
+                ("wReserved", ctypes.c_uint16),
+                ("XonLim", ctypes.c_uint16),
+                ("XoffLim", ctypes.c_uint16),
+                ("ByteSize", ctypes.c_ubyte),
+                ("Parity", ctypes.c_ubyte),
+                ("StopBits", ctypes.c_ubyte),
+                ("XonChar", ctypes.c_char),
+                ("XoffChar", ctypes.c_char),
+                ("ErrorChar", ctypes.c_char),
+                ("EofChar", ctypes.c_char),
+                ("EvtChar", ctypes.c_char),
+                ("wReserved1", ctypes.c_uint16),
+            ]
+
+        dcb = DCB()
+        dcb.DCBlength = ctypes.sizeof(DCB)
+        if kernel32.GetCommState(handle, ctypes.byref(dcb)) == 0:
+            kernel32.CloseHandle(handle)
+            raise OSError(f"GetCommState failed on {self.port}")
+        dcb.BaudRate = self.baudrate
+        dcb.fFlags = 0x0001  # fBinary = 1
+        dcb.ByteSize = 8
+        dcb.Parity = 0  # NOPARITY
+        dcb.StopBits = 0  # ONESTOPBIT
+        if kernel32.SetCommState(handle, ctypes.byref(dcb)) == 0:
+            kernel32.CloseHandle(handle)
+            raise OSError(f"SetCommState failed on {self.port}")
+        kernel32.PurgeComm(handle, 0x000F)
+        self._handle = handle
+
+    def send_all(self, data: bytes) -> bool:
+        if not data:
+            return True
+        if platform.system() == "Windows":
+            if self._handle is None:
+                return False
+            kernel32 = ctypes.windll.kernel32
+            written = ctypes.c_uint32(0)
+            ok = kernel32.WriteFile(self._handle, data, len(data), ctypes.byref(written), None)
+            return bool(ok and written.value == len(data))
+        if self._fd is None:
+            return False
+        total = 0
+        while total < len(data):
+            _, wlist, _ = select.select([], [self._fd], [], 2.0)
+            if not wlist:
+                return False
+            n = os.write(self._fd, data[total:])
+            if n <= 0:
+                return False
+            total += n
+        return True
+
+    def recv_once(self, buf_size: int, timeout_sec: float = 0.3) -> bytes:
+        """Read one serial frame/packet; coalesces bytes arriving within 35ms after first byte."""
+        if platform.system() == "Windows":
+            if self._handle is None:
+                raise OSError("Serial port closed")
+            kernel32 = ctypes.windll.kernel32
+
+            class COMMTIMEOUTS(ctypes.Structure):
+                _fields_ = [
+                    ("ReadIntervalTimeout", ctypes.c_uint32),
+                    ("ReadTotalTimeoutMultiplier", ctypes.c_uint32),
+                    ("ReadTotalTimeoutConstant", ctypes.c_uint32),
+                    ("WriteTotalTimeoutMultiplier", ctypes.c_uint32),
+                    ("WriteTotalTimeoutConstant", ctypes.c_uint32),
+                ]
+
+            ms = max(50, int(timeout_sec * 1000))
+            timeouts = COMMTIMEOUTS(35, 0, ms, 0, 2000)
+            kernel32.SetCommTimeouts(self._handle, ctypes.byref(timeouts))
+            buf = ctypes.create_string_buffer(buf_size)
+            read_bytes = ctypes.c_uint32(0)
+            ok = kernel32.ReadFile(self._handle, buf, buf_size, ctypes.byref(read_bytes), None)
+            if not ok:
+                raise OSError("ReadFile failed on serial port")
+            if read_bytes.value == 0:
+                raise socket.timeout("Serial read timeout")
+            return buf.raw[: read_bytes.value]
+
+        if self._fd is None:
+            raise OSError("Serial port closed")
+        rlist, _, _ = select.select([self._fd], [], [], timeout_sec)
+        if not rlist:
+            raise socket.timeout("Serial read timeout")
+        chunks: list[bytes] = []
+        total = 0
+        while total < buf_size:
+            try:
+                part = os.read(self._fd, buf_size - total)
+            except BlockingIOError:
+                part = b""
+            if part:
+                chunks.append(part)
+                total += len(part)
+            r_more, _, _ = select.select([self._fd], [], [], 0.035)
+            if not r_more:
+                break
+        if not chunks:
+            raise socket.timeout("Serial read empty")
+        return b"".join(chunks)
+
+    def close(self) -> None:
+        if platform.system() == "Windows":
+            if self._handle is not None:
+                try:
+                    ctypes.windll.kernel32.CloseHandle(self._handle)
+                except Exception:
+                    pass
+                self._handle = None
+        else:
+            if self._fd is not None:
+                try:
+                    os.close(self._fd)
+                except OSError:
+                    pass
+                self._fd = None
 
 
 def local_ipv4_addresses() -> list[str]:
@@ -560,7 +769,7 @@ class HaxGatePacketCodec:
             self.last_error = f"card_7k.dll not found in {sdk_path}"
             return False
         try:
-            if hasattr(os := __import__("os"), "add_dll_directory"):
+            if hasattr(os, "add_dll_directory"):
                 os.add_dll_directory(str(sdk_path))
             win_dll = ctypes.WinDLL(str(dll_file))
 
@@ -688,6 +897,7 @@ class GateState:
     running: bool = False
     host: str = "0.0.0.0"
     port: int = 9000
+    serial_port: str = ""
     status_text: str = "Stopped"
     peer: str = ""
     server_control_active: bool = False
@@ -705,17 +915,20 @@ class GateState:
 
 
 class RfidGateController:
-    """TCP Server controller for the HAX-7000 / HAX9370AMRFID Gate using the 2.1.2.0 SDK protocol.
+    """RS232 Serial & TCP Server controller for the HAX-7000 / HAX9370AMRFID Gate (SDK 2.1.2.0).
+
+    Supports both:
+    - **RS232 Serial (`115200 8N1`)**: `/dev/ttyUSB0` on Linux or `COMx` on Windows.
+    - **TCP Server (`0.0.0.0:9000`)**: for `USR-TCP232-E2` Ethernet/Wi-Fi gate modules.
 
     Protocol flow per `hax_7k_sdk.h` and `7k_gate_demo.cpp`:
-    1. Gate connects as a TCP client to `host:port` (default `0.0.0.0:9000`).
-    2. Server sends `Device_PackServerControl(1)` and verifies `Device_UnPackServerControl(reply) == DEVICE_OK`.
-    3. Gate continuously streams EPC packets (`Device_UnPackEpcId` -> `[{"ant_id":1,"epc_id":"..."}]`).
-    4. Server checks each EPC in `ItemDatabase`:
-       - If ANY EPC has `sold == False` (unsold item): Server sends `Device_PackDeviceAlarm({1,1,1,1})`
-         and verifies `Device_UnPackDeviceAlarm(reply) == DEVICE_OK` -> Gate alarms!
-       - If item has `sold == True` (customer bought item): Server does NOT send alarm -> Gate stays silent!
-       - If item is not in the table (`unknown`): Server does NOT send alarm -> Gate stays silent!
+    1. Sends `Device_PackServerControl(1)` and verifies `Device_UnPackServerControl(reply) == DEVICE_OK`.
+    2. Gate streams EPC packets (`Device_UnPackEpcId` -> `[{"ant_id":1,"epc_id":"..."}]`).
+    3. If `register_when_scanning` is True (user clicked `Start Scanning`), registers new EPCs into `ItemDatabase` (`Sold = False`).
+    4. Otherwise checks each EPC in `ItemDatabase`:
+       - `sold == False` (unsold item): Sends `Device_PackDeviceAlarm({1,1,1,1})` -> Gate ALARMS!
+       - `sold == True` (customer bought item): Does NOT send alarm -> Gate stays silent (`PASS`)!
+       - Unknown EPC (not in table): Does NOT send alarm (`IGNORE`)!
     """
 
     def __init__(
@@ -724,16 +937,30 @@ class RfidGateController:
         sdk_dir: str | Path | None = None,
         capture_dir: str | Path = "captures",
         codec: HaxGatePacketCodec | None = None,
+        session: ScanSession | None = None,
     ) -> None:
         self.item_db = item_db
+        self.session = session
         self.capture_dir = Path(capture_dir)
         self.codec = codec or HaxGatePacketCodec(sdk_dir=sdk_dir)
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._serial_thread: threading.Thread | None = None
         self._sockets: list[socket.socket] = []
+        self._serial: RawSerialPort | None = None
+        self._register_mode = False
         self._events: deque[GateEvent] = deque(maxlen=100)
         self._state = GateState(sdk_loaded=self.codec.sdk_loaded)
+
+    def set_register_mode(self, enabled: bool) -> None:
+        """When True ('Start Scanning' clicked), tags read by the Gate are added to `ItemDatabase` as Unsold (`Sold=False`)."""
+        with self._lock:
+            self._register_mode = bool(enabled)
+
+    def is_register_mode(self) -> bool:
+        with self._lock:
+            return self._register_mode
 
     def state(self) -> GateState:
         with self._lock:
@@ -744,7 +971,7 @@ class RfidGateController:
             return list(self._events)
 
     def simulate_gate_read(self, epcs: list[str], ant_id: int = 1) -> GateEvent:
-        """Simulate a Gate tag read against `ItemDatabase` (useful for UI testing & verification)."""
+        """Evaluate a list of EPCs against `ItemDatabase` and record the GateEvent."""
         decision = self.item_db.evaluate_gate_epcs(epcs)
         norm_epcs = [normalize_epc(e) for e in epcs]
         valid_epcs = [e for e in norm_epcs if e]
@@ -775,21 +1002,27 @@ class RfidGateController:
                 self._state.ignore_count += 1
         return event
 
-    def start(self, host: str = "0.0.0.0", port: int = 9000) -> None:
+    def start(self, host: str = "0.0.0.0", port: int = 9000, serial_port: str | None = None) -> None:
         self.stop()
         self.capture_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         capture_path = self.capture_dir / f"hax-gate-{stamp}.jsonl"
         self._stop = threading.Event()
         ready = threading.Event()
+
+        if serial_port is None:
+            detected = detect_serial_ports()
+            serial_port = detected[0] if detected else ""
+
         with self._lock:
             self._state = GateState(
                 running=True,
                 host=host,
                 port=port,
+                serial_port=serial_port or "",
                 sdk_loaded=self.codec.sdk_loaded,
-                status_text=f"Listening on {host}:{port} for RFID Gate",
-                last_summary=f"Listening on {host}:{port} for RFID Gate...",
+                status_text=f"Listening on {host}:{port}",
+                last_summary="Gate Status: Waiting for tag...",
                 capture_file=str(capture_path),
             )
         self._thread = threading.Thread(
@@ -799,6 +1032,14 @@ class RfidGateController:
         )
         self._thread.start()
         ready.wait(timeout=1.0)
+
+        if serial_port:
+            self._serial_thread = threading.Thread(
+                target=self._run_serial,
+                args=(serial_port, capture_path, self._stop),
+                daemon=True,
+            )
+            self._serial_thread.start()
 
     @staticmethod
     def _send_all(sock: socket.socket, data: bytes) -> bool:
@@ -813,7 +1054,7 @@ class RfidGateController:
         sock.settimeout(timeout_sec)
         return sock.recv(buf_size)
 
-    def _step_server_control(self, client: socket.socket, peer_label: str, log_file) -> bool:
+    def _step_server_control_io(self, send_fn, recv_fn, peer_label: str, log_file) -> bool:
         ret, packet = self.codec.pack_server_control(1)
         if ret != DEVICE_OK or not packet:
             with self._lock:
@@ -832,13 +1073,13 @@ class RfidGateController:
             + "\n"
         )
         log_file.flush()
-        if not self._send_all(client, packet):
+        if not send_fn(packet):
             return False
         try:
-            reply = self._recv_once(client, PACKET_BUF_SIZE, REPLY_TIMEOUT_SEC)
+            reply = recv_fn(PACKET_BUF_SIZE, REPLY_TIMEOUT_SEC)
         except OSError:
             with self._lock:
-                self._state.last_error = "No server_control reply from Gate"
+                self._state.last_error = f"No server_control reply from {peer_label}"
             return False
         if not reply:
             return False
@@ -864,7 +1105,7 @@ class RfidGateController:
             return False
         return True
 
-    def _step_device_alarm(self, client: socket.socket, peer_label: str, log_file) -> bool:
+    def _step_device_alarm_io(self, send_fn, recv_fn, peer_label: str, log_file) -> bool:
         ret, packet = self.codec.pack_device_alarm(1, 1, 1, 1)
         if ret != DEVICE_OK or not packet:
             with self._lock:
@@ -883,13 +1124,13 @@ class RfidGateController:
             + "\n"
         )
         log_file.flush()
-        if not self._send_all(client, packet):
+        if not send_fn(packet):
             return False
         try:
-            reply = self._recv_once(client, PACKET_BUF_SIZE, REPLY_TIMEOUT_SEC)
+            reply = recv_fn(PACKET_BUF_SIZE, REPLY_TIMEOUT_SEC)
         except OSError:
             with self._lock:
-                self._state.last_error = "No device_alarm reply from Gate"
+                self._state.last_error = f"No device_alarm reply from {peer_label}"
             return False
         if not reply:
             return False
@@ -915,6 +1156,154 @@ class RfidGateController:
             return False
         return True
 
+    def _process_epc_packet(self, chunk: bytes, send_fn, recv_fn, peer_label: str, log_file) -> None:
+        if not self.codec.sdk_loaded:
+            return
+        ret, parsed_entries = self.codec.unpack_epc_id(chunk)
+        if ret != DEVICE_OK:
+            with self._lock:
+                self._state.last_error = f"Device_UnPackEpcId: {device_error_text(ret)}"
+            return
+        if not parsed_entries:
+            return
+
+        epcs = [entry["epc_id"] for entry in parsed_entries]
+        antennas = [entry["ant_id"] for entry in parsed_entries]
+
+        # If user clicked "Start Scanning", register the scanned tags into the table as Unsold (Sold=False)
+        if self.is_register_mode():
+            for epc in epcs:
+                if self.session is not None:
+                    self.session.observe(epc, source="gate")
+                else:
+                    self.item_db.upsert_item(epc, sold=False)
+            with self._lock:
+                self._state.last_epc = epcs[0]
+                self._state.last_action = "REGISTERED"
+                self._state.last_summary = f"Scanned & Added Tag: {epcs[0]} (Sold = False)"
+            return
+
+        decision = self.item_db.evaluate_gate_epcs(epcs)
+        alarm_sent = False
+        alarm_ack = False
+        if decision.should_alarm:
+            alarm_sent = True
+            alarm_ack = self._step_device_alarm_io(send_fn, recv_fn, peer_label, log_file)
+
+        event = GateEvent(
+            at=utc_now(),
+            epcs=epcs,
+            antennas=antennas,
+            should_alarm=decision.should_alarm,
+            alarm_sent=alarm_sent,
+            alarm_ack=alarm_ack,
+            action=decision.action,
+            unsold_epcs=decision.unsold_epcs,
+            sold_epcs=decision.sold_epcs,
+            unknown_epcs=decision.unknown_epcs,
+            summary=decision.summary,
+        )
+        log_file.write(
+            json.dumps(
+                {
+                    "at": event.at,
+                    "event": "gate_decision",
+                    "peer": peer_label,
+                    "epcs": epcs,
+                    "action": decision.action,
+                    "should_alarm": decision.should_alarm,
+                    "alarm_ack": alarm_ack,
+                    "unsold_epcs": decision.unsold_epcs,
+                    "sold_epcs": decision.sold_epcs,
+                    "unknown_epcs": decision.unknown_epcs,
+                }
+            )
+            + "\n"
+        )
+        log_file.flush()
+
+        with self._lock:
+            self._events.appendleft(event)
+            self._state.last_epc = epcs[0]
+            self._state.last_action = decision.action
+            self._state.last_summary = decision.summary
+            if decision.action == "ALARM":
+                self._state.alarm_count += 1
+            elif decision.action == "PASS":
+                self._state.pass_count += 1
+            else:
+                self._state.ignore_count += 1
+
+    def _run_serial(self, port_name: str, capture_path: Path, stop: threading.Event) -> None:
+        peer_label = f"RS232:{port_name}"
+        while not stop.is_set():
+            try:
+                ser = RawSerialPort(port_name, baudrate=115200)
+            except PermissionError:
+                with self._lock:
+                    self._state.last_error = f"Permission denied on {port_name} (run: sudo chmod 666 {port_name})"
+                    self._state.status_text = f"RS232 {port_name} (Permission Denied)"
+                time.sleep(1.5)
+                continue
+            except OSError as err:
+                with self._lock:
+                    self._state.last_error = str(err)
+                time.sleep(1.5)
+                continue
+
+            with self._lock:
+                self._serial = ser
+                self._state.connections += 1
+                self._state.peer = peer_label
+                self._state.last_error = ""
+                self._state.status_text = f"RS232 Connected ({port_name})"
+
+            try:
+                with capture_path.open("a", encoding="utf-8") as log_file:
+                    log_file.write(
+                        json.dumps({"at": utc_now(), "event": "serial_opened", "peer": peer_label}) + "\n"
+                    )
+                    log_file.flush()
+
+                    if self.codec.sdk_loaded:
+                        if self._step_server_control_io(ser.send_all, ser.recv_once, peer_label, log_file):
+                            with self._lock:
+                                self._state.server_control_active = True
+                                self._state.status_text = f"Gate Active ({port_name})"
+
+                    while not stop.is_set():
+                        try:
+                            chunk = ser.recv_once(EPC_BUF_SIZE, 0.3)
+                        except socket.timeout:
+                            continue
+                        except OSError:
+                            break
+                        if not chunk:
+                            continue
+                        with self._lock:
+                            self._state.bytes_received += len(chunk)
+                        log_file.write(
+                            json.dumps(
+                                {
+                                    "at": utc_now(),
+                                    "event": "rx_serial",
+                                    "peer": peer_label,
+                                    "bytes": len(chunk),
+                                    "hex": chunk.hex(" ").upper(),
+                                }
+                            )
+                            + "\n"
+                        )
+                        log_file.flush()
+                        self._process_epc_packet(chunk, ser.send_all, ser.recv_once, peer_label, log_file)
+            finally:
+                ser.close()
+                with self._lock:
+                    self._serial = None
+                    if not stop.is_set() and self._state.peer == peer_label:
+                        self._state.peer = ""
+                        self._state.server_control_active = False
+
     def _serve_gate_client(
         self,
         client: socket.socket,
@@ -922,13 +1311,15 @@ class RfidGateController:
         log_file,
         stop: threading.Event,
     ) -> None:
+        send_fn = lambda data: self._send_all(client, data)
+        recv_fn = lambda sz, to: self._recv_once(client, sz, to)
+
         if self.codec.sdk_loaded:
-            if not self._step_server_control(client, peer_label, log_file):
+            if not self._step_server_control_io(send_fn, recv_fn, peer_label, log_file):
                 return
             with self._lock:
                 self._state.server_control_active = True
                 self._state.status_text = f"Gate Active ({peer_label})"
-                self._state.last_summary = f"Gate connected ({peer_label}) — ServerControl enabled"
 
         while not stop.is_set():
             try:
@@ -954,71 +1345,7 @@ class RfidGateController:
                 + "\n"
             )
             log_file.flush()
-
-            if not self.codec.sdk_loaded:
-                continue
-
-            ret, parsed_entries = self.codec.unpack_epc_id(chunk)
-            if ret != DEVICE_OK:
-                with self._lock:
-                    self._state.last_error = f"Device_UnPackEpcId: {device_error_text(ret)}"
-                continue
-            if not parsed_entries:
-                continue
-
-            epcs = [entry["epc_id"] for entry in parsed_entries]
-            antennas = [entry["ant_id"] for entry in parsed_entries]
-            decision = self.item_db.evaluate_gate_epcs(epcs)
-
-            alarm_sent = False
-            alarm_ack = False
-            if decision.should_alarm:
-                alarm_sent = True
-                alarm_ack = self._step_device_alarm(client, peer_label, log_file)
-
-            event = GateEvent(
-                at=utc_now(),
-                epcs=epcs,
-                antennas=antennas,
-                should_alarm=decision.should_alarm,
-                alarm_sent=alarm_sent,
-                alarm_ack=alarm_ack,
-                action=decision.action,
-                unsold_epcs=decision.unsold_epcs,
-                sold_epcs=decision.sold_epcs,
-                unknown_epcs=decision.unknown_epcs,
-                summary=decision.summary,
-            )
-            log_file.write(
-                json.dumps(
-                    {
-                        "at": event.at,
-                        "event": "gate_decision",
-                        "peer": peer_label,
-                        "epcs": epcs,
-                        "action": decision.action,
-                        "should_alarm": decision.should_alarm,
-                        "alarm_ack": alarm_ack,
-                        "unsold_epcs": decision.unsold_epcs,
-                        "sold_epcs": decision.sold_epcs,
-                        "unknown_epcs": decision.unknown_epcs,
-                    }
-                )
-                + "\n"
-            )
-            log_file.flush()
-
-            with self._lock:
-                self._events.appendleft(event)
-                self._state.last_epc = epcs[0]
-                self._state.last_action = decision.action
-                self._state.last_summary = decision.summary
-                if decision.action == "ALARM":
-                    self._state.alarm_count += 1
-                elif decision.action == "PASS":
-                    self._state.pass_count += 1
-                else:
-                    self._state.ignore_count += 1
+            self._process_epc_packet(chunk, send_fn, recv_fn, peer_label, log_file)
 
     def _run_server(
         self,
@@ -1065,7 +1392,7 @@ class RfidGateController:
                         except OSError:
                             pass
                         with self._lock:
-                            if not stop.is_set():
+                            if not stop.is_set() and self._state.peer == peer_label:
                                 self._state.peer = ""
                                 self._state.server_control_active = False
                                 self._state.status_text = f"Listening on {host}:{port} (gate closed)"
@@ -1097,10 +1424,18 @@ class RfidGateController:
                     s.close()
                 except OSError:
                     pass
+            ser = self._serial
+            self._serial = None
             thread = self._thread
             self._thread = None
+            ser_thread = self._serial_thread
+            self._serial_thread = None
+        if ser is not None:
+            ser.close()
         if thread and thread.is_alive():
             thread.join(timeout=1.5)
+        if ser_thread and ser_thread.is_alive():
+            ser_thread.join(timeout=1.5)
 
 
 @dataclass
@@ -1343,7 +1678,7 @@ class TcpDeactivatorListener:
             except OSError:
                 pass
 
-        if hasattr(os := __import__("os"), "add_dll_directory"):
+        if hasattr(os, "add_dll_directory"):
             os.add_dll_directory(str(sdk_path))
         dll = ctypes.CDLL(str(dll_file))
 
