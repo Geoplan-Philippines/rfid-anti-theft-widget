@@ -3,9 +3,7 @@ __pycache__/
 *.pyo
 .venv/
 captures/
-sdk-win-x86/*.dll
 sdk-win-x86/config.ini
-*.dll
 *.exe
 *.db
 *.db-journal
@@ -13,4 +11,5 @@ sdk-win-x86/config.ini
 *.db-shm
 .DS_Store
 Thumbs.db
+
 

@@ -112,16 +112,25 @@ def parse_epc_json_payload(raw_json: str | bytes) -> list[dict]:
 
 
 def detect_serial_ports() -> list[str]:
-    """Detect available RS232 serial ports on Linux (/dev/ttyUSB*, /dev/ttyACM*) or Windows (COM1..COM32)."""
+    """Detect available RS232 serial ports on Linux (/dev/ttyUSB*, /dev/ttyACM*) or Windows (COM1..COM32).
+
+    On Windows, prioritizes USB-serial / FTDI VCP ports (e.g. \\Device\\VCP0, \\Device\\USBSER*)
+    ahead of legacy motherboard COM1/COM2 ports.
+    """
     if platform.system() == "Windows":
-        ports: list[str] = []
+        usb_ports: list[str] = []
+        other_ports: list[str] = []
         kernel32 = ctypes.windll.kernel32
         for i in range(1, 33):
             name = f"COM{i}"
             target_buf = ctypes.create_unicode_buffer(256)
             if kernel32.QueryDosDeviceW(name, target_buf, 256) != 0:
-                ports.append(name)
-        return ports
+                target = target_buf.value.upper()
+                if any(k in target for k in ("VCP", "USB", "FTD", "SILAB", "CH34", "PROLIFIC")) or i >= 3:
+                    usb_ports.append(name)
+                else:
+                    other_ports.append(name)
+        return usb_ports + other_ports
     found = sorted(glob.glob("/dev/ttyUSB*")) + sorted(glob.glob("/dev/ttyACM*"))
     return found
 
@@ -769,6 +778,7 @@ class HaxGatePacketCodec:
             self.last_error = f"card_7k.dll not found in {sdk_path}"
             return False
         try:
+            os.environ["PATH"] = str(sdk_path) + os.pathsep + os.environ.get("PATH", "")
             if hasattr(os, "add_dll_directory"):
                 os.add_dll_directory(str(sdk_path))
             win_dll = ctypes.WinDLL(str(dll_file))
