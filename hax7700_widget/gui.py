@@ -1,4 +1,4 @@
-"""Simple, clean Desktop UI for Items Table (Sold: True/False) + RFID Gate Alarm (GTK3 on Linux, Tkinter on Windows)."""
+"""Simple, clean Desktop UI for Real RFID Tags Table (Sold: True/False) + RFID Gate Alarm (GTK3 on Linux, Tkinter on Windows)."""
 
 from __future__ import annotations
 
@@ -76,33 +76,41 @@ def run_gtk_widget(
       background-color: #f4f4f5;
       color: #3f3f46;
       border-radius: 8px;
-      padding: 16px;
-      font-size: 15px;
-      font-weight: 800;
+      padding: 14px;
+      font-size: 14px;
+      font-weight: 700;
     }
     .gate-box-pass {
       background-color: #dcfce7;
       color: #166534;
       border-radius: 8px;
-      padding: 16px;
-      font-size: 16px;
+      padding: 14px;
+      font-size: 15px;
       font-weight: 800;
     }
     .gate-box-alarm {
       background-color: #fee2e2;
       color: #991b1b;
       border-radius: 8px;
-      padding: 16px;
-      font-size: 16px;
+      padding: 14px;
+      font-size: 15px;
       font-weight: 800;
     }
-    .btn-dark {
+    .primary-btn {
       background-image: none;
       background-color: #18181b;
       color: #ffffff;
       font-weight: 700;
       border-radius: 6px;
-      padding: 8px 14px;
+      padding: 10px 14px;
+    }
+    .danger-btn {
+      background-image: none;
+      background-color: #dc2626;
+      color: #ffffff;
+      font-weight: 700;
+      border-radius: 6px;
+      padding: 10px 14px;
     }
     .btn-blue {
       background-image: none;
@@ -110,7 +118,7 @@ def run_gtk_widget(
       color: #ffffff;
       font-weight: 700;
       border-radius: 6px;
-      padding: 8px 14px;
+      padding: 10px 14px;
     }
     .btn-light {
       background-image: none;
@@ -118,7 +126,7 @@ def run_gtk_widget(
       color: #18181b;
       font-weight: 700;
       border-radius: 6px;
-      padding: 8px 14px;
+      padding: 10px 14px;
     }
     """
     provider = Gtk.CssProvider()
@@ -126,25 +134,25 @@ def run_gtk_widget(
     screen = Gtk.Window().get_screen()
     Gtk.StyleContext.add_provider_for_screen(screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-    listener.set_scanning(True)
+    listener.set_scanning(False)
 
-    win = Gtk.Window(title="RFID Gate & Items")
-    win.set_default_size(540, 440)
+    win = Gtk.Window(title="HAX7700 & RFID Gate")
+    win.set_default_size(520, 420)
     win.set_border_width(16)
 
     root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
     win.add(root)
 
-    # 1. Simple Header
+    # 1. Header: Title + Connection Status
     header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
     header.get_style_context().add_class("header-box")
-    title = Gtk.Label(label="RFID Items & Gate Check", xalign=0)
+    title = Gtk.Label(label="RFID Items (0)", xalign=0)
     title.get_style_context().add_class("title")
 
     status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
     dot_area = Gtk.DrawingArea()
     dot_area.set_size_request(16, 16)
-    status_lbl = Gtk.Label(label="Waiting for hardware...", xalign=1)
+    status_lbl = Gtk.Label(label="Connecting...", xalign=1)
     status_lbl.get_style_context().add_class("status-text")
     status_box.pack_start(dot_area, False, False, 0)
     status_box.pack_start(status_lbl, False, False, 0)
@@ -153,32 +161,28 @@ def run_gtk_widget(
     header.pack_end(status_box, False, False, 0)
     root.pack_start(header, False, False, 0)
 
-    # 2. Big Gate Status Banner (Top so you immediately see ALARM vs NO ALARM)
-    gate_banner = Gtk.Label(
-        label="GATE READY — Select an item below and click 'Walk Through Gate'",
-        xalign=0.5,
-    )
+    # 2. Gate Banner (shows Gate Alarm status from real Gate hardware)
+    gate_banner = Gtk.Label(label="Gate Status: Waiting for tag...", xalign=0.5)
     gate_banner.get_style_context().add_class("gate-box-idle")
     root.pack_start(gate_banner, False, False, 0)
 
-    # 3. Clean 3-Column Table: Item | EPC | Sold (True / False)
-    # Columns in store: epc (hidden key or col 1), name (col 0), sold_text (col 2), bg_color (col 3), fg_color (col 4)
+    # 3. Clean 3-Column Table for Real Scanned Tags: Item | EPC Tag | Sold
     items_store = Gtk.ListStore(str, str, str, str, str)
     items_tree = Gtk.TreeView(model=items_store)
     items_tree.set_headers_visible(True)
 
     col_item = Gtk.TreeViewColumn("Item", Gtk.CellRendererText(), text=1, background=3, foreground=4)
-    col_item.set_min_width(130)
+    col_item.set_min_width(110)
     items_tree.append_column(col_item)
 
     col_epc = Gtk.TreeViewColumn("EPC Tag", Gtk.CellRendererText(), text=0, background=3, foreground=4)
-    col_epc.set_min_width(230)
+    col_epc.set_min_width(250)
     items_tree.append_column(col_epc)
 
     renderer_sold = Gtk.CellRendererText()
     renderer_sold.set_property("xalign", 0.5)
     col_sold = Gtk.TreeViewColumn("Sold", renderer_sold, text=2, background=3, foreground=4)
-    col_sold.set_min_width(110)
+    col_sold.set_min_width(100)
     items_tree.append_column(col_sold)
 
     scroll = Gtk.ScrolledWindow()
@@ -186,24 +190,20 @@ def run_gtk_widget(
     scroll.add(items_tree)
     root.pack_start(scroll, True, True, 0)
 
-    # 4. Simple Bottom Action Bar
+    # 4. Bottom Action Bar: Start Scanning | Sold: True / False | Clear
     btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
-    add_btn = Gtk.Button(label="+ Add Item")
-    add_btn.get_style_context().add_class("btn-light")
+    scan_btn = Gtk.Button(label="Start Scanning")
+    scan_btn.get_style_context().add_class("primary-btn")
 
     toggle_btn = Gtk.Button(label="Sold: True / False")
-    toggle_btn.get_style_context().add_class("btn-dark")
-
-    walk_btn = Gtk.Button(label="Walk Through Gate")
-    walk_btn.get_style_context().add_class("btn-blue")
+    toggle_btn.get_style_context().add_class("btn-blue")
 
     clear_btn = Gtk.Button(label="Clear")
     clear_btn.get_style_context().add_class("btn-light")
 
-    btn_row.pack_start(add_btn, False, False, 0)
+    btn_row.pack_start(scan_btn, True, True, 0)
     btn_row.pack_start(toggle_btn, True, True, 0)
-    btn_row.pack_start(walk_btn, True, True, 0)
     btn_row.pack_end(clear_btn, False, False, 0)
     root.pack_start(btn_row, False, False, 0)
 
@@ -220,6 +220,7 @@ def run_gtk_widget(
         nonlocal last_items_snapshot
         rows = item_db.list_items()
         snap = [(r["epc"], r["name"], "True" if r["sold"] else "False") for r in rows]
+        title.set_text(f"RFID Items ({len(snap)})")
         if not force and snap == last_items_snapshot:
             return
         selected_epc = get_selected_epc()
@@ -229,9 +230,9 @@ def run_gtk_widget(
         restore_iter = None
         for epc, name, sold_str in snap:
             if sold_str == "True":
-                bg, fg = "#f0fdf4", "#166534"
+                bg, fg = "#dcfce7", "#166534"
             else:
-                bg, fg = "#fef2f2", "#991b1b"
+                bg, fg = "#fee2e2", "#991b1b"
             it = items_store.append([epc, name, sold_str, bg, fg])
             if first_iter is None:
                 first_iter = it
@@ -267,14 +268,25 @@ def run_gtk_widget(
     def refresh_ui() -> bool:
         st = listener.state()
         gst = gate.state()
-        if gst.peer and st.peer:
+
+        if st.peer and gst.peer:
             status_lbl.set_text("Pad + Gate Connected")
         elif gst.peer:
             status_lbl.set_text("Gate Connected")
         elif st.peer:
             status_lbl.set_text("Pad Connected")
         else:
-            status_lbl.set_text("Ready (Simulation / Listening)")
+            status_lbl.set_text("Connecting...")
+
+        btn_ctx = scan_btn.get_style_context()
+        if st.scanning:
+            scan_btn.set_label("Stop")
+            btn_ctx.remove_class("primary-btn")
+            btn_ctx.add_class("danger-btn")
+        else:
+            scan_btn.set_label("Start Scanning")
+            btn_ctx.remove_class("danger-btn")
+            btn_ctx.add_class("primary-btn")
 
         ctx = gate_banner.get_style_context()
         ctx.remove_class("gate-box-idle")
@@ -283,60 +295,44 @@ def run_gtk_widget(
 
         if gst.last_action == "ALARM":
             ctx.add_class("gate-box-alarm")
-            gate_banner.set_text(f"GATE ALARM! — Item is NOT Sold (Sold = False)")
+            gate_banner.set_text(f"GATE ALARM! — {gst.last_epc} (Sold = False)")
         elif gst.last_action == "PASS":
             ctx.add_class("gate-box-pass")
-            gate_banner.set_text(f"NO ALARM (SAFE TO PASS) — Item is Sold (Sold = True)")
+            gate_banner.set_text(f"NO ALARM — {gst.last_epc} (Sold = True)")
         else:
             ctx.add_class("gate-box-idle")
-            gate_banner.set_text("GATE READY — Select an item and click 'Walk Through Gate'")
+            gate_banner.set_text("Gate Status: Waiting for tag...")
 
         refresh_items_table()
         dot_area.queue_draw()
         return True
 
-    def on_add_item(_btn: Gtk.Button) -> None:
-        session.set_pad_mode("register_unsold")
-        snap = session.observe(None, source="demo")
-        last_epc = snap.get("last_epc")
-        refresh_items_table(force=True)
-        # Select the newly added item
-        if last_epc:
-            for row in items_store:
-                if row[0] == last_epc:
-                    items_tree.get_selection().select_iter(row.iter)
-                    break
+    def on_toggle_scan(_btn: Gtk.Button) -> None:
+        if listener.is_scanning():
+            listener.set_scanning(False)
+        else:
+            session.reset()
+            listener.set_scanning(True)
         refresh_ui()
 
     def on_toggle_sold(_btn=None) -> None:
         epc = get_selected_epc()
         if epc:
-            updated = item_db.toggle_sold(epc)
+            item_db.toggle_sold(epc)
             refresh_items_table(force=True)
-            if updated is not None:
-                gate.simulate_gate_read([epc])
             refresh_ui()
 
     def on_row_activated(_tree, path, _col) -> None:
         epc = items_store[path][0]
-        updated = item_db.toggle_sold(epc)
+        item_db.toggle_sold(epc)
         refresh_items_table(force=True)
-        if updated is not None:
-            gate.simulate_gate_read([epc])
         refresh_ui()
 
-    def on_walk_gate(_btn: Gtk.Button) -> None:
-        epc = get_selected_epc()
-        if not epc:
-            on_add_item(_btn)
-            epc = get_selected_epc()
-        if epc:
-            gate.simulate_gate_read([epc])
-            refresh_ui()
-
     def on_clear(_btn: Gtk.Button) -> None:
+        session.reset()
         item_db.clear_items()
         gate._state.last_action = "IDLE"
+        gate._state.last_epc = ""
         refresh_items_table(force=True)
         refresh_ui()
 
@@ -345,16 +341,11 @@ def run_gtk_widget(
         gate.stop()
         Gtk.main_quit()
 
-    add_btn.connect("clicked", on_add_item)
+    scan_btn.connect("clicked", on_toggle_scan)
     toggle_btn.connect("clicked", on_toggle_sold)
     items_tree.connect("row-activated", on_row_activated)
-    walk_btn.connect("clicked", on_walk_gate)
     clear_btn.connect("clicked", on_clear)
     win.connect("destroy", on_destroy)
-
-    # Seed 1 demo item if database is empty so the table is immediately clear
-    if item_db.counts()["total"] == 0:
-        session.observe(None, source="demo")
 
     _auto_start_listener(listener, sdk_dir, port=port)
     gate.start(host="0.0.0.0", port=gate_port)
@@ -381,19 +372,16 @@ def run_tk_widget(
     if gate is None:
         gate = RfidGateController(item_db=item_db, sdk_dir=sdk_dir)
 
-    listener.set_scanning(True)
+    listener.set_scanning(False)
     _auto_start_listener(listener, sdk_dir, port=port)
     gate.start(host="0.0.0.0", port=gate_port)
-
-    if item_db.counts()["total"] == 0:
-        session.observe(None, source="demo")
 
     import tkinter as tk
     from tkinter import ttk
 
     root = tk.Tk()
-    root.title("RFID Gate & Items")
-    root.geometry("560x450")
+    root.title("HAX7700 & RFID Gate")
+    root.geometry("540x430")
     root.configure(bg="#ffffff", padx=16, pady=14)
 
     style = ttk.Style(root)
@@ -407,9 +395,10 @@ def run_tk_widget(
     # 1. Header
     header = tk.Frame(root, bg="#ffffff")
     header.pack(fill="x", pady=(0, 10))
+    title_var = tk.StringVar(value="RFID Items (0)")
     tk.Label(
         header,
-        text="RFID Items & Gate Check",
+        textvariable=title_var,
         font=("Segoe UI", 14, "bold"),
         fg="#18181b",
         bg="#ffffff",
@@ -422,25 +411,25 @@ def run_tk_widget(
     halo_id = dot_canvas.create_oval(1, 1, 15, 15, fill="#fef3c7", outline="")
     core_id = dot_canvas.create_oval(4, 4, 12, 12, fill="#f59e0b", outline="")
 
-    status_var = tk.StringVar(value="Ready")
+    status_var = tk.StringVar(value="Connecting...")
     status_lbl = tk.Label(
         status_frame,
         textvariable=status_var,
         font=("Segoe UI", 9, "bold"),
-        fg="#71717a",
+        fg="#d97706",
         bg="#ffffff",
     )
     status_lbl.pack(side="left")
 
-    # 2. Big Gate Result Box
-    gate_var = tk.StringVar(value="GATE READY — Select an item and click 'Walk Through Gate'")
+    # 2. Gate Banner
+    gate_var = tk.StringVar(value="Gate Status: Waiting for tag...")
     gate_banner = tk.Label(
         root,
         textvariable=gate_var,
         font=("Segoe UI", 11, "bold"),
         bg="#f4f4f5",
         fg="#3f3f46",
-        pady=14,
+        pady=12,
         padx=10,
     )
     gate_banner.pack(fill="x", pady=(0, 12))
@@ -455,8 +444,8 @@ def run_tk_widget(
     items_tree.heading("epc", text="EPC Tag")
     items_tree.heading("sold", text="Sold")
 
-    items_tree.column("name", width=130, anchor="w")
-    items_tree.column("epc", width=250, anchor="w")
+    items_tree.column("name", width=110, anchor="w")
+    items_tree.column("epc", width=260, anchor="w")
     items_tree.column("sold", width=100, anchor="center")
 
     items_tree.tag_configure("sold_true", background="#dcfce7", foreground="#166534")
@@ -480,6 +469,7 @@ def run_tk_widget(
         nonlocal last_items_snapshot
         rows = item_db.list_items()
         snap = [(r["name"], r["epc"], "True" if r["sold"] else "False") for r in rows]
+        title_var.set(f"RFID Items ({len(snap)})")
         if not force and snap == last_items_snapshot:
             return
         selected_epc = get_selected_epc()
@@ -498,14 +488,16 @@ def run_tk_widget(
         if target is not None:
             items_tree.selection_set(target)
 
-    # 4. Simple Bottom Buttons
+    # 4. Bottom Action Bar: Start Scanning | Sold: True / False | Clear
     btn_row = tk.Frame(root, bg="#ffffff")
     btn_row.pack(fill="x")
 
-    def on_add_item() -> None:
-        session.set_pad_mode("register_unsold")
-        session.observe(None, source="demo")
-        refresh_items_table(force=True)
+    def on_toggle_scan() -> None:
+        if listener.is_scanning():
+            listener.set_scanning(False)
+        else:
+            session.reset()
+            listener.set_scanning(True)
         update_ui()
 
     def on_toggle_sold(_event=None) -> None:
@@ -513,63 +505,47 @@ def run_tk_widget(
         if epc:
             item_db.toggle_sold(epc)
             refresh_items_table(force=True)
-            gate.simulate_gate_read([epc])
-            update_ui()
-
-    def on_walk_gate() -> None:
-        epc = get_selected_epc()
-        if not epc:
-            on_add_item()
-            epc = get_selected_epc()
-        if epc:
-            gate.simulate_gate_read([epc])
             update_ui()
 
     def on_clear() -> None:
+        session.reset()
         item_db.clear_items()
         gate._state.last_action = "IDLE"
+        gate._state.last_epc = ""
         refresh_items_table(force=True)
         update_ui()
 
     items_tree.bind("<Double-1>", on_toggle_sold)
 
-    tk.Button(
+    scan_btn = tk.Button(
         btn_row,
-        text="+ Add Item",
+        text="Start Scanning",
         font=("Segoe UI", 10, "bold"),
-        bg="#f4f4f5",
-        fg="#18181b",
+        bg="#18181b",
+        fg="#ffffff",
+        activebackground="#27272a",
+        activeforeground="#ffffff",
         relief="flat",
-        padx=12,
+        padx=14,
         pady=8,
         cursor="hand2",
-        command=on_add_item,
-    ).pack(side="left", padx=(0, 8))
+        command=on_toggle_scan,
+    )
+    scan_btn.pack(side="left", expand=True, fill="x", padx=(0, 8))
 
     tk.Button(
         btn_row,
         text="Sold: True / False",
         font=("Segoe UI", 10, "bold"),
-        bg="#18181b",
+        bg="#2563eb",
         fg="#ffffff",
+        activebackground="#1d4ed8",
+        activeforeground="#ffffff",
         relief="flat",
         padx=14,
         pady=8,
         cursor="hand2",
         command=on_toggle_sold,
-    ).pack(side="left", expand=True, fill="x", padx=(0, 8))
-
-    tk.Button(
-        btn_row,
-        text="Walk Through Gate",
-        font=("Segoe UI", 10, "bold"),
-        bg="#2563eb",
-        fg="#ffffff",
-        relief="flat",
-        padx=14,
-        pady=8,
-        cursor="hand2",
-        command=on_walk_gate,
     ).pack(side="left", expand=True, fill="x", padx=(0, 8))
 
     tk.Button(
@@ -594,25 +570,51 @@ def run_tk_widget(
         halo_r = 4.0 + 3.0 * pulse
         dot_canvas.coords(halo_id, 8.0 - halo_r, 8.0 - halo_r, 8.0 + halo_r, 8.0 + halo_r)
 
-        if connected:
-            status_var.set("Hardware Connected")
+        if st.peer and gst.peer:
+            status_var.set("Pad + Gate Connected")
             status_lbl.configure(fg="#16a34a")
+        elif gst.peer:
+            status_var.set("Gate Connected")
+            status_lbl.configure(fg="#16a34a")
+        elif st.peer:
+            status_var.set("Pad Connected")
+            status_lbl.configure(fg="#16a34a")
+        else:
+            status_var.set("Connecting...")
+            status_lbl.configure(fg="#d97706")
+
+        if connected:
             dot_canvas.itemconfig(halo_id, fill=_lerp_hex("#ffffff", "#bbf7d0", 0.35 + 0.65 * pulse))
             dot_canvas.itemconfig(core_id, fill=_lerp_hex("#22c55e", "#15803d", pulse))
         else:
-            status_var.set("Ready")
-            status_lbl.configure(fg="#d97706")
             dot_canvas.itemconfig(halo_id, fill=_lerp_hex("#ffffff", "#fde68a", 0.35 + 0.65 * pulse))
             dot_canvas.itemconfig(core_id, fill=_lerp_hex("#fcd34d", "#d97706", pulse))
 
+        if st.scanning:
+            scan_btn.configure(
+                text="Stop",
+                bg="#dc2626",
+                fg="#ffffff",
+                activebackground="#b91c1c",
+                activeforeground="#ffffff",
+            )
+        else:
+            scan_btn.configure(
+                text="Start Scanning",
+                bg="#18181b",
+                fg="#ffffff",
+                activebackground="#27272a",
+                activeforeground="#ffffff",
+            )
+
         if gst.last_action == "ALARM":
-            gate_var.set("GATE ALARM! — Item is NOT Sold (Sold = False)")
+            gate_var.set(f"GATE ALARM! — {gst.last_epc} (Sold = False)")
             gate_banner.configure(bg="#fee2e2", fg="#991b1b")
         elif gst.last_action == "PASS":
-            gate_var.set("NO ALARM (SAFE TO PASS) — Item is Sold (Sold = True)")
+            gate_var.set(f"NO ALARM — {gst.last_epc} (Sold = True)")
             gate_banner.configure(bg="#dcfce7", fg="#166534")
         else:
-            gate_var.set("GATE READY — Select an item and click 'Walk Through Gate'")
+            gate_var.set("Gate Status: Waiting for tag...")
             gate_banner.configure(bg="#f4f4f5", fg="#3f3f46")
 
         refresh_items_table()
