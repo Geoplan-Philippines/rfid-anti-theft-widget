@@ -65,11 +65,11 @@ Read [`docs/HARDWARE-STUDY-HAX7700-HAX9370AMRFID.md`](docs/HARDWARE-STUDY-HAX770
 
 ## 5. Repository Layout & Commands
 
-- `hax7700_widget/core.py` — EPC formatting/normalization, `ScanSession` deduplication, `TcpDeactivatorListener` (direct TCP + 32-bit Windows `card_7k.dll` ctypes driver), and `EpcIdSt` / `EpcIdList` structures.
-- `hax7700_widget/gui.py` — Standalone desktop counter widget (`run_gtk_widget` for Linux GTK3, `run_tk_widget` for Windows Tkinter).
-- `hax7700_widget/__main__.py` — CLI entry point (`python3 -m hax7700_widget [--port 9090] [--sdk-dir sdk-win-x86]`).
-- `tests/test_core.py` — Unit tests for ABI struct layout, EPC formatting, session deduplication, and TCP listener socket capture.
-- `docs/` — Complete hardware study, `USR-TCP232-E2` live snapshot, `HAX7700_desc.pdf`, PCB/connector photos, DLL analysis, and decoded `hax_7k_adapt.h`.
+- `hax7700_widget/core.py` — EPC formatting/normalization, `ItemDatabase` (SQLite `items.db` with `sold: True/False`), `HaxGatePacketCodec` & `RfidGateController` (SDK v2.1.2.0 `Device_PackServerControl` / `Device_UnPackEpcId` / `Device_PackDeviceAlarm`), `ScanSession` deduplication, `TcpDeactivatorListener` (direct TCP + 32-bit Windows `card_7k.dll` ctypes driver), and `EpcIdSt` / `EpcIdList` / `DeviceAlarmConfig` structures.
+- `hax7700_widget/gui.py` — Desktop checkout & gate controller UI (`run_gtk_widget` for Linux GTK3, `run_tk_widget` for Windows Tkinter).
+- `hax7700_widget/__main__.py` — CLI entry point (`python3 -m hax7700_widget [--port 9090] [--gate-port 9000] [--db items.db] [--sdk-dir sdk-win-x86]`).
+- `tests/test_core.py` — Unit tests for ABI struct layout, EPC formatting, SQLite `sold: true/false` gate decisions, Pad checkout modes, and Gate TCP handshake/alarm flow.
+- `docs/` — Complete hardware study, `USR-TCP232-E2` live snapshot, `HAX7700_desc.pdf`, PCB/connector photos, DLL analysis, and SDK headers (`hax_7k_adapt.h`, `hax_7k_sdk.h`, `7k_gate_demo.cpp`).
 
 ```bash
 # Run unit tests

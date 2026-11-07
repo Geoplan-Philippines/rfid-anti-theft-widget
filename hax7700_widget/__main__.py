@@ -1,37 +1,69 @@
-"""CLI entry point for the standalone HAX7700 Python counter widget."""
+"""CLI entry point for the HAX7700 Pad + HAX7000 RFID Gate Controller widget."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from .core import ScanSession, TcpDeactivatorListener
+from .core import ItemDatabase, RfidGateController, ScanSession, TcpDeactivatorListener
 from .gui import run_gtk_widget, run_tk_widget
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Standalone HAX7700 Deactivator tag/EPC counter widget")
-    parser.add_argument("--port", type=int, default=9090, help="Inbound TCP port for HAX7700 (default: 9090)")
+    root_dir = Path(__file__).resolve().parent.parent
+    parser = argparse.ArgumentParser(
+        description="HAX7700 Pad Counter + SQLite Items Table (sold: true/false) + HAX7000 RFID Gate Controller"
+    )
+    parser.add_argument("--port", type=int, default=9090, help="Inbound TCP port for HAX7700 Pad (default: 9090)")
+    parser.add_argument(
+        "--gate-port",
+        type=int,
+        default=9000,
+        help="Inbound TCP port for HAX7000 RFID Gate ServerControl/Alarm (default: 9000)",
+    )
+    parser.add_argument(
+        "--db",
+        default=str(root_dir / "items.db"),
+        help="SQLite database file for items table (default: items.db)",
+    )
     parser.add_argument(
         "--sdk-dir",
-        default=str(Path(__file__).resolve().parent.parent / "sdk-win-x86"),
-        help="Directory containing 32-bit Windows card_7k.dll + common.dll",
+        default=str(root_dir / "sdk-win-x86"),
+        help="Directory containing 32-bit Windows card_7k.dll + common.dll (v2.1.2.0)",
     )
     parser.add_argument(
         "--capture-dir",
-        default=str(Path(__file__).resolve().parent.parent / "captures"),
+        default=str(root_dir / "captures"),
         help="Directory for raw TCP packet logs",
     )
     args = parser.parse_args()
 
-    session = ScanSession()
-    listener = TcpDeactivatorListener(session=session, capture_dir=args.capture_dir)
     sdk_dir = Path(args.sdk_dir)
+    item_db = ItemDatabase(db_path=args.db)
+    session = ScanSession(item_db=item_db)
+    listener = TcpDeactivatorListener(session=session, capture_dir=args.capture_dir)
+    gate = RfidGateController(item_db=item_db, sdk_dir=sdk_dir, capture_dir=args.capture_dir)
 
     try:
-        return run_gtk_widget(session, listener, sdk_dir=sdk_dir, port=args.port)
+        return run_gtk_widget(
+            session,
+            listener,
+            sdk_dir=sdk_dir,
+            port=args.port,
+            item_db=item_db,
+            gate=gate,
+            gate_port=args.gate_port,
+        )
     except Exception:
-        return run_tk_widget(session, listener, sdk_dir=sdk_dir, port=args.port)
+        return run_tk_widget(
+            session,
+            listener,
+            sdk_dir=sdk_dir,
+            port=args.port,
+            item_db=item_db,
+            gate=gate,
+            gate_port=args.gate_port,
+        )
 
 
 if __name__ == "__main__":

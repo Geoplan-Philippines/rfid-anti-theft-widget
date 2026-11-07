@@ -1,13 +1,16 @@
-# HAX7700 Standalone Python Tag/EPC Counter Widget
+# HAX7700 Pad & HAX7000 RFID Gate Controller (`sold: true/false`)
 
-A minimal, self-contained Python desktop widget that counts unique tags/EPCs scanned on the **HAX7700 Deactivator (`RFID7700` board)**.
+A self-contained Python desktop application that pairs the **HAX7700 Desktop Pad (`RFID7700` board)** with the **HAX7000 / HAX9370AMRFID Exit Security Gate (`RFID7000` board)** using a local SQLite **`items` table (`sold: True / False`)** and the vendor **SDK v2.1.2.0 (`Device_Pack*` / `Device_UnPack*`)**:
 
-- **Zero external Python package dependencies** (uses Python standard library + native `GTK3` on Linux or `Tkinter` on Windows).
-- **Unique EPC deduplication:** Each physical tag EPC increments the session counter once (`1`, `2`, `3`…); repeat reads of the same EPC are ignored. Clicking **Start Scanning** resets the count and starts a fresh scan session; clicking **Stop** pauses counting.
-- **Breathing connection indicator:** Displays an amber breathing indicator (`Connecting...`) while waiting for the HAX7700 and switches to green (`Connected`) once the pad connects on TCP port `9090`.
-- **High-speed HAX7700 scanner support (`~245 ms` per scan):**
-  - **Windows x86 Native HAX SDK (`sdk-win-x86/card_7k.dll` + `common.dll`):** When run with 32-bit Python on Windows (`start-windows.bat`), automatically tunes `common.dll`'s `config.ini` network wait times (`net_send_data_wait_time=5`, `net_time_out=120`, `time_out=80`), opens the TCP listener on `0.0.0.0:9090`, and runs a dedicated fast-polling worker (`read_epc_id`) every `~245 ms`.
-  - **Linux / Windows Direct TCP Listener (`0.0.0.0:9090`):** Accepts the inbound TCP connection from the HAX7700's internal `USR-TCP232-E2` (`169.254.68.93`).
+- **Zero external Python package dependencies** (uses Python standard library `sqlite3` + native `GTK3` on Linux or `Tkinter` on Windows).
+- **SQLite Items Table (`items.db` — `sold: True / False`):**
+  - **`sold = False` (Unsold):** When the RFID Gate reads this item's EPC, the server sends `Device_PackDeviceAlarm({1, 1, 1, 1})` so the gate **ALARMS**.
+  - **`sold = True` (Sold / Customer Bought):** When the RFID Gate reads this item's EPC, the server does **not** send an alarm command, so the customer passes silently (**NO ALARM**).
+  - **Unknown EPC (Not in table):** Ignored (**NO ALARM**).
+- **HAX7000 RFID Gate ServerControl & Alarm Driver (Port `9000`, SDK `2.1.2.0`):**
+  - Uses `card_7k.dll` v2.1.2.0 pure C packet APIs (`Device_PackServerControl`, `Device_UnPackServerControl`, `Device_UnPackEpcId`, `Device_PackDeviceAlarm`, `Device_UnPackDeviceAlarm`).
+- **HAX7700 Pad Counter & POS Checkout Mode (Port `9090`):**
+  - Switch between **Register Item (`sold = False`)** and **Customer Checkout (`sold = True`)** when scanning tags on the HAX7700 Pad, or double-click any row in the UI table to flip `Sold` (`TRUE` / `FALSE`).
 
 ---
 

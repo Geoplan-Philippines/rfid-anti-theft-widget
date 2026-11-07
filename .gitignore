@@ -7,5 +7,10 @@ sdk-win-x86/*.dll
 sdk-win-x86/config.ini
 *.dll
 *.exe
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
 .DS_Store
 Thumbs.db
+
